@@ -14,6 +14,7 @@ import {
   ErrorPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
+  useThread,
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
@@ -22,7 +23,7 @@ import {
   CopyIcon,
   SquareIcon,
 } from "lucide-react";
-import type { FC } from "react";
+import { useEffect, type FC } from "react";
 
 export const Thread: FC = () => {
   return (
@@ -33,8 +34,8 @@ export const Thread: FC = () => {
       }}
     >
       <ThreadPrimitive.Viewport
-        turnAnchor="top"
-        className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4"
+        autoScroll
+        className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll px-4 pt-4"
       >
         <AuiIf condition={(s) => s.thread.isEmpty}>
           <ThreadWelcome />
@@ -47,6 +48,8 @@ export const Thread: FC = () => {
           }}
         />
 
+        <ScrollOnLoad />
+
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-3xl bg-background pb-4 md:pb-6">
           <ThreadScrollToBottom />
           <Composer />
@@ -54,6 +57,39 @@ export const Thread: FC = () => {
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
   );
+};
+
+/**
+ * On thread switch, keeps scrolling to bottom as content loads.
+ * Uses MutationObserver to catch every DOM change during async loading.
+ * Does nothing if re-clicking the already-active thread.
+ */
+const ScrollOnLoad: FC = () => {
+  const threadId = useThread((s) => s.threadId);
+
+  useEffect(() => {
+    const vp = document.querySelector(".aui-thread-viewport");
+    if (!vp) return;
+
+    vp.scrollTop = vp.scrollHeight;
+
+    // Keep scrolling as content loads; stop once DOM settles (no mutations for 100ms)
+    let timer: ReturnType<typeof setTimeout>;
+    const observer = new MutationObserver(() => {
+      vp.scrollTop = vp.scrollHeight;
+      clearTimeout(timer);
+      timer = setTimeout(() => observer.disconnect(), 100);
+    });
+    observer.observe(vp, { childList: true, subtree: true });
+    timer = setTimeout(() => observer.disconnect(), 100);
+
+    return () => {
+      observer.disconnect();
+      clearTimeout(timer);
+    };
+  }, [threadId]);
+
+  return null;
 };
 
 const ThreadScrollToBottom: FC = () => {

@@ -5,7 +5,7 @@
  * Streams responses using the assistant-ui v1 SSE protocol.
  */
 
-import { getOrCreateConversation } from "./conversation-store";
+import { getOrCreateConversation, artifactsDirForThread } from "./conversation-store";
 import { createSseStream } from "./stream-mapper";
 
 interface UIMessagePart {
@@ -104,7 +104,11 @@ export async function POST(req: Request) {
     finalMessage = `[Attached files:\n${fileList}]\n\n${messageText}`;
   }
 
-  const stream = createSseStream(conversation, finalMessage, fileIds);
+  const stream = createSseStream(conversation, finalMessage, {
+    fileIds: fileIds.length > 0 ? fileIds : undefined,
+    artifactsDir: artifactsDirForThread(threadId),
+    threadId,
+  });
 
   return new Response(stream, {
     headers: {

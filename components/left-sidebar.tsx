@@ -8,17 +8,20 @@ export interface SidebarNavItem {
   label: string;
   onClick?: () => void;
   variant?: "default" | "primary";
+  disabled?: boolean;
 }
 
 interface LeftSidebarProps {
   title: string;
   actions: SidebarNavItem[];
+  onClose?: () => void;
   children?: ReactNode;
 }
 
 export const LeftSidebar: FC<LeftSidebarProps> = ({
   title,
   actions,
+  onClose,
   children,
 }) => {
   return (
@@ -26,7 +29,10 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
       {/* Header — Figma: 18px Inter Regular */}
       <div className="flex items-center justify-between px-[30px] py-5">
         <h1 className="text-lg font-normal text-sidebar-foreground">{title}</h1>
-        <button className="text-muted-foreground hover:text-sidebar-foreground">
+        <button
+          onClick={onClose}
+          className="text-muted-foreground hover:text-sidebar-foreground"
+        >
           <PanelLeftIcon className="size-[22px]" />
         </button>
       </div>
@@ -36,11 +42,12 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
         {actions.map((action) => (
           <button
             key={action.label}
-            onClick={action.onClick}
+            onClick={action.disabled ? undefined : action.onClick}
+            disabled={action.disabled}
             className={
               action.variant === "primary"
-                ? "flex h-[35px] w-[225px] items-center gap-2 rounded-[5px] bg-secondary px-[18px] text-left text-sm font-normal text-foreground"
-                : "flex items-center gap-2 px-[18px] py-2 text-left text-sm font-normal text-foreground hover:text-sidebar-foreground"
+                ? `flex h-[35px] w-[225px] items-center gap-2 rounded-[5px] bg-secondary px-[18px] text-left text-sm font-normal text-foreground ${action.disabled ? "cursor-not-allowed opacity-50" : ""}`
+                : `flex items-center gap-2 px-[18px] py-2 text-left text-sm font-normal text-foreground hover:text-sidebar-foreground ${action.disabled ? "cursor-not-allowed opacity-50" : ""}`
             }
           >
             {action.icon}

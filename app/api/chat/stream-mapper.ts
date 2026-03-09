@@ -8,7 +8,7 @@
  *   tool-input-available → { toolCallId, toolName, input: object }
  *   tool-output-available→ { toolCallId, output: JSONValue }
  *
- * Single export: createSseStream(conversation, message, fileIds?) → ReadableStream
+ * Single export: createSseStream(conversation, message, options?) → ReadableStream
  */
 
 import type { Conversation } from "ucl-study-llm-chat-api";
@@ -17,9 +17,6 @@ import { readFileSync, mkdirSync, rmSync, copyFileSync } from "fs";
 import { join, extname } from "path";
 import os from "os";
 import crypto from "crypto";
-
-const FILES_DIR = join(process.cwd(), "data/files");
-mkdirSync(FILES_DIR, { recursive: true });
 
 const encoder = new TextEncoder();
 
@@ -47,6 +44,14 @@ function parseToolOutput(raw: string): unknown {
   }
 }
 
+export interface SseStreamOptions {
+  fileIds?: string[];
+  /** Directory to save generated artifacts (plots, text files). */
+  artifactsDir: string;
+  /** Thread ID for constructing artifact URLs. */
+  threadId: string;
+}
+
 /**
  * Creates a ReadableStream that emits assistant-ui v1 SSE events
  * by calling conversation.send() and mapping each SDK StreamEvent.
@@ -54,8 +59,13 @@ function parseToolOutput(raw: string): unknown {
 export function createSseStream(
   conversation: Conversation,
   message: string,
-  fileIds?: string[],
+  options: SseStreamOptions,
 ): ReadableStream {
+  const { fileIds, artifactsDir, threadId } = options;
+
+  // Ensure artifacts directory exists
+  mkdirSync(artifactsDir, { recursive: true });
+
   return new ReadableStream({
     async start(controller) {
       // State machine
@@ -243,7 +253,7 @@ export function createSseStream(
         // Clean up trailing open text block
         closeTextBlock();
 
-        // Emit generated files as markdown images served via /api/files/
+        // Emit generated files as markdown images/links served via artifacts route
         if (result?.files?.length) {
           let tmpDir: string | undefined;
           try {
@@ -278,7 +288,7 @@ export function createSseStream(
               const origExt = extname(file.filename || ".png") || ".png";
               const ext = isImage ? origExt : ".txt";
               const id = crypto.randomUUID() + ext;
-              copyFileSync(downloadedPath, join(FILES_DIR, id));
+              copyFileSync(downloadedPath, join(artifactsDir, id));
 
               const rawName = file.filename || `Generated file ${i + 1}`;
               // Fix displayed name for text files (SDK labels them .png)
@@ -296,14 +306,14 @@ export function createSseStream(
                 emit({
                   type: "text-delta",
                   id: currentTextId(),
-                  delta: `\n\n![${img.filename}](/api/files/${img.id})\n\n`,
+                  delta: `\n\n![${img.filename}](/api/threads/${threadId}/artifacts/${img.id})\n\n`,
                 });
               }
               for (const tf of textFiles) {
                 emit({
                   type: "text-delta",
                   id: currentTextId(),
-                  delta: `\n\n[${tf.filename}](/api/files/${tf.id})\n\n`,
+                  delta: `\n\n[${tf.filename}](/api/threads/${threadId}/artifacts/${tf.id})\n\n`,
                 });
               }
               closeTextBlock();

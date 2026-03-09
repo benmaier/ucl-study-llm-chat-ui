@@ -1,29 +1,28 @@
 /**
- * Serves generated files (plots, images) by ID.
- * Files are stored in data/files/ by the stream mapper.
+ * Serves artifact files (plots, text outputs) for a conversation.
+ * Files are stored in {conversationsDir}/{threadId}/artifacts/
  */
 
 import { readFileSync, existsSync } from "fs";
 import path from "path";
-
-const FILES_DIR = path.resolve("data/files");
+import { artifactsDirForThread } from "@/app/api/chat/conversation-store";
 
 export async function GET(
   _req: Request,
-  { params }: { params: Promise<{ id: string }> },
+  { params }: { params: Promise<{ id: string; fileId: string }> },
 ) {
-  const { id } = await params;
+  const { id, fileId } = await params;
 
   // Sanitize to prevent path traversal
-  const safe = id.replace(/[^a-zA-Z0-9_.-]/g, "_");
-  const filePath = path.join(FILES_DIR, safe);
+  const safeFileId = fileId.replace(/[^a-zA-Z0-9_.-]/g, "_");
+  const filePath = path.join(artifactsDirForThread(id), safeFileId);
 
   if (!existsSync(filePath)) {
     return new Response("Not found", { status: 404 });
   }
 
   const data = readFileSync(filePath);
-  const ext = path.extname(safe).toLowerCase();
+  const ext = path.extname(safeFileId).toLowerCase();
   const mimeMap: Record<string, string> = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
