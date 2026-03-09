@@ -47,7 +47,16 @@ interface TextUIPart {
   text: string;
 }
 
-type UIPart = TextUIPart;
+interface DynamicToolUIPart {
+  type: "dynamic-tool";
+  toolName: string;
+  toolCallId: string;
+  state: "output-available";
+  input: unknown;
+  output: unknown;
+}
+
+type UIPart = TextUIPart | DynamicToolUIPart;
 
 interface UIMessageOut {
   role: "user" | "assistant";
@@ -166,6 +175,21 @@ export async function GET(
     const assistantParts: UIPart[] = [];
     if (text) {
       assistantParts.push({ type: "text", text });
+    }
+
+    // Add tool-call parts for code artifacts
+    if (turn.codeArtifacts?.length) {
+      for (let i = 0; i < turn.codeArtifacts.length; i++) {
+        const artifact = turn.codeArtifacts[i];
+        assistantParts.push({
+          type: "dynamic-tool",
+          toolName: "code_execution",
+          toolCallId: `tool-${turn.turnNumber}-${i}`,
+          state: "output-available",
+          input: { code: artifact.code },
+          output: "Execution complete",
+        });
+      }
     }
 
     messages.push({
