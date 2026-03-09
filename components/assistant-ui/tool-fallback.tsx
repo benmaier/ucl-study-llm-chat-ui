@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useRef, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import {
   AlertCircleIcon,
   CheckIcon,
@@ -18,6 +18,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { cn } from "@/lib/utils";
 
 const ANIMATION_DURATION = 200;
@@ -66,7 +68,7 @@ function ToolFallbackRoot({
       open={isOpen}
       onOpenChange={handleOpenChange}
       className={cn(
-        "aui-tool-fallback-root group/tool-fallback-root w-full rounded-lg border py-3",
+        "aui-tool-fallback-root group/tool-fallback-root my-3 w-full rounded-lg border py-3",
         className,
       )}
       style={
@@ -183,6 +185,40 @@ function ToolFallbackContent({
   );
 }
 
+/** Extract displayable code/command from tool args JSON. */
+function parseArgsForDisplay(argsText: string): {
+  code: string;
+  language: string;
+} {
+  try {
+    const parsed = JSON.parse(argsText);
+    if (typeof parsed === "object" && parsed !== null) {
+      if (typeof parsed.code === "string") {
+        return { code: parsed.code, language: "python" };
+      }
+      if (typeof parsed.command === "string") {
+        return { code: parsed.command, language: "bash" };
+      }
+      // text_editor_code_execution: show file_text or old_str/new_str
+      if (typeof parsed.file_text === "string") {
+        return { code: parsed.file_text, language: "python" };
+      }
+      if (typeof parsed.old_str === "string" || typeof parsed.new_str === "string") {
+        const parts: string[] = [];
+        if (parsed.path) parts.push(`# ${parsed.path}`);
+        if (parsed.old_str) parts.push(`- ${parsed.old_str}`);
+        if (parsed.new_str) parts.push(`+ ${parsed.new_str}`);
+        return { code: parts.join("\n"), language: "diff" };
+      }
+      // Fallback: prettify JSON
+      return { code: JSON.stringify(parsed, null, 2), language: "json" };
+    }
+  } catch {
+    // not JSON
+  }
+  return { code: argsText, language: "text" };
+}
+
 function ToolFallbackArgs({
   argsText,
   className,
@@ -190,7 +226,12 @@ function ToolFallbackArgs({
 }: React.ComponentProps<"div"> & {
   argsText?: string;
 }) {
-  if (!argsText) return null;
+  const { code, language } = useMemo(
+    () => parseArgsForDisplay(argsText ?? ""),
+    [argsText],
+  );
+
+  if (!code?.trim()) return null;
 
   return (
     <div
@@ -198,9 +239,18 @@ function ToolFallbackArgs({
       className={cn("aui-tool-fallback-args px-4", className)}
       {...props}
     >
-      <pre className="aui-tool-fallback-args-value whitespace-pre-wrap">
-        {argsText}
-      </pre>
+      <SyntaxHighlighter
+        language={language}
+        style={oneDark}
+        customStyle={{
+          margin: 0,
+          borderRadius: "0.5rem",
+          fontSize: "0.8rem",
+        }}
+        wrapLongLines
+      >
+        {code}
+      </SyntaxHighlighter>
     </div>
   );
 }
@@ -212,7 +262,12 @@ function ToolFallbackResult({
 }: React.ComponentProps<"div"> & {
   result?: unknown;
 }) {
-  if (result === undefined) return null;
+  if (
+    result === undefined ||
+    result === "" ||
+    result === "Execution complete"
+  )
+    return null;
 
   return (
     <div
