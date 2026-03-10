@@ -1,45 +1,21 @@
 /**
  * GET /api/threads/[id]/messages
  *
- * Reads conversation.json and converts turns into assistant-ui
- * ThreadMessageLike[] format for rendering in the UI.
+ * Reads conversation.json, uses the SDK to convert turns into
+ * unified message format, then maps to AI SDK UIMessage parts.
  */
 
 import {
   filePathForThread,
   artifactsDirForThread,
 } from "@/app/api/chat/conversation-store";
+import {
+  convertTurnsToMessages,
+  type UnifiedMessagePart,
+} from "ucl-study-llm-chat-api";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import crypto from "crypto";
 import path from "path";
-
-interface StoredFile {
-  fileId: string;
-  filename: string;
-  mimeType?: string;
-  base64Data?: string;
-}
-
-interface CodeArtifact {
-  id: string;
-  path: string;
-  code: string;
-  language: string;
-}
-
-interface TurnRecord {
-  turnNumber: number;
-  userMessage: string;
-  assistantText: string;
-  codeArtifacts: CodeArtifact[];
-  generatedFiles: StoredFile[];
-  attachedFileIds: string[];
-}
-
-interface SerializedConversation {
-  id: string;
-  turns: TurnRecord[];
-}
 
 /** AI SDK UIMessage part types */
 interface TextUIPart {
@@ -65,35 +41,91 @@ interface UIMessageOut {
 }
 
 /**
- * Ensure a StoredFile with base64Data is written to the artifacts dir.
- * Returns the filename (UUID + ext) used for the URL.
+ * Write base64 file data to the artifacts dir.
+ * Returns the artifact filename (UUID + ext) for URL construction.
  */
-function ensureArtifactFile(
-  file: StoredFile,
+function writeArtifact(
+  base64Data: string,
+  filename: string,
   artifactsDir: string,
-): string | null {
-  if (!file.base64Data) return null;
-
-  // Determine extension from original filename or mime type
-  const origExt = path.extname(file.filename || ".png") || ".png";
-
-  // Check if it's actually an image by decoding first few bytes
-  const buf = Buffer.from(file.base64Data, "base64");
+): string {
+  const origExt = path.extname(filename || ".png") || ".png";
+  const buf = Buffer.from(base64Data, "base64");
   const isPng =
     buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
   const isJpeg = buf[0] === 0xff && buf[1] === 0xd8;
-  const isImage = isPng || isJpeg;
-  const ext = isImage ? origExt : ".txt";
+  const ext = isPng || isJpeg ? origExt : ".txt";
 
   const id = crypto.randomUUID() + ext;
   const filePath = path.join(artifactsDir, id);
-
-  if (!existsSync(filePath)) {
-    mkdirSync(artifactsDir, { recursive: true });
-    writeFileSync(filePath, buf);
-  }
-
+  mkdirSync(artifactsDir, { recursive: true });
+  writeFileSync(filePath, buf);
   return id;
+}
+
+/**
+ * Detect whether base64 data represents an image (PNG or JPEG).
+ */
+function isImageData(base64Data: string): boolean {
+  const buf = Buffer.from(base64Data, "base64");
+  const isPng =
+    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
+  const isJpeg = buf[0] === 0xff && buf[1] === 0xd8;
+  return isPng || isJpeg;
+}
+
+/**
+ * Convert a UnifiedMessagePart to an AI SDK UIPart.
+ * File parts get written to disk and returned as markdown text.
+ */
+function toUIPart(
+  part: UnifiedMessagePart,
+  threadId: string,
+  artifactsDir: string,
+  seenHashes: Set<string>,
+): UIPart | null {
+  switch (part.type) {
+    case "text":
+      return { type: "text", text: part.text };
+
+    case "tool-call":
+      return {
+        type: "dynamic-tool",
+        toolName: part.toolName,
+        toolCallId: part.toolCallId,
+        state: "output-available",
+        input: part.input,
+        output: part.output ?? "Execution complete",
+      };
+
+    case "file": {
+      if (!part.base64Data) return null;
+
+      // Deduplicate by content hash
+      const hash = crypto
+        .createHash("sha256")
+        .update(Buffer.from(part.base64Data, "base64"))
+        .digest("hex");
+      if (seenHashes.has(hash)) return null;
+      seenHashes.add(hash);
+
+      const artifactId = writeArtifact(
+        part.base64Data,
+        part.filename,
+        artifactsDir,
+      );
+      const isImage = isImageData(part.base64Data);
+      const displayName = isImage
+        ? part.filename
+        : part.filename.replace(/\.\w+$/, ".txt");
+      const url = `/api/threads/${threadId}/artifacts/${artifactId}`;
+      const md = isImage
+        ? `![${displayName}](${url})`
+        : `[${displayName}](${url})`;
+
+      return { type: "text", text: `\n\n${md}\n\n` };
+    }
+  }
 }
 
 export async function GET(
@@ -107,7 +139,7 @@ export async function GET(
     return Response.json({ messages: [] });
   }
 
-  let data: SerializedConversation;
+  let data: { turns: unknown[] };
   try {
     data = JSON.parse(readFileSync(filePath, "utf-8"));
   } catch {
@@ -115,89 +147,19 @@ export async function GET(
   }
 
   const artifactsDir = artifactsDirForThread(threadId);
-  const messages: UIMessageOut[] = [];
+  const seenHashes = new Set<string>();
 
-  for (const turn of data.turns) {
-    // User message
-    messages.push({
-      role: "user",
-      id: `user-${turn.turnNumber}`,
-      parts: [{ type: "text", text: turn.userMessage }],
-    });
+  // SDK converts turns to unified format with interleaved parts
+  const unified = convertTurnsToMessages(data.turns as Parameters<typeof convertTurnsToMessages>[0]);
 
-    // Build text content — assistant text + generated file references
-    let text = turn.assistantText;
-
-    // Append generated files as markdown
-    if (turn.generatedFiles?.length) {
-      const seenHashes = new Set<string>();
-      const fileRefs: string[] = [];
-
-      for (const file of turn.generatedFiles) {
-        // Deduplicate by hash
-        if (file.base64Data) {
-          const hash = crypto
-            .createHash("sha256")
-            .update(Buffer.from(file.base64Data, "base64"))
-            .digest("hex");
-          if (seenHashes.has(hash)) continue;
-          seenHashes.add(hash);
-        }
-
-        const artifactId = ensureArtifactFile(file, artifactsDir);
-        if (artifactId) {
-          const buf = Buffer.from(file.base64Data!, "base64");
-          const isPng =
-            buf[0] === 0x89 &&
-            buf[1] === 0x50 &&
-            buf[2] === 0x4e &&
-            buf[3] === 0x47;
-          const isJpeg = buf[0] === 0xff && buf[1] === 0xd8;
-          const isImage = isPng || isJpeg;
-          const displayName = isImage
-            ? file.filename
-            : file.filename.replace(/\.\w+$/, ".txt");
-          const url = `/api/threads/${threadId}/artifacts/${artifactId}`;
-
-          if (isImage) {
-            fileRefs.push(`![${displayName}](${url})`);
-          } else {
-            fileRefs.push(`[${displayName}](${url})`);
-          }
-        }
-      }
-
-      if (fileRefs.length > 0) {
-        text += "\n\n" + fileRefs.join("\n\n");
-      }
-    }
-
-    const assistantParts: UIPart[] = [];
-    if (text) {
-      assistantParts.push({ type: "text", text });
-    }
-
-    // Add tool-call parts for code artifacts
-    if (turn.codeArtifacts?.length) {
-      for (let i = 0; i < turn.codeArtifacts.length; i++) {
-        const artifact = turn.codeArtifacts[i];
-        assistantParts.push({
-          type: "dynamic-tool",
-          toolName: "code_execution",
-          toolCallId: `tool-${turn.turnNumber}-${i}`,
-          state: "output-available",
-          input: { code: artifact.code },
-          output: "Execution complete",
-        });
-      }
-    }
-
-    messages.push({
-      role: "assistant",
-      id: `assistant-${turn.turnNumber}`,
-      parts: assistantParts,
-    });
-  }
+  // Map unified parts to AI SDK UIMessage format
+  const messages: UIMessageOut[] = unified.map((msg) => ({
+    role: msg.role,
+    id: msg.id,
+    parts: msg.parts
+      .map((part) => toUIPart(part, threadId, artifactsDir, seenHashes))
+      .filter((p): p is UIPart => p !== null),
+  }));
 
   return Response.json({ messages });
 }
