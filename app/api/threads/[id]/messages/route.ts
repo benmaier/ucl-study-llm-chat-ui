@@ -32,7 +32,14 @@ interface DynamicToolUIPart {
   output: unknown;
 }
 
-type UIPart = TextUIPart | DynamicToolUIPart;
+interface FileUIPart {
+  type: "file";
+  mediaType: string;
+  filename?: string;
+  url: string;
+}
+
+type UIPart = TextUIPart | DynamicToolUIPart | FileUIPart;
 
 interface UIMessageOut {
   role: "user" | "assistant";
@@ -76,10 +83,13 @@ function isImageData(base64Data: string): boolean {
 
 /**
  * Convert a UnifiedMessagePart to an AI SDK UIPart.
- * File parts get written to disk and returned as markdown text.
+ *
+ * User file parts → FileUIPart (renders as attachment tiles via assistant-ui).
+ * Assistant file parts → written to disk, returned as markdown text.
  */
 function toUIPart(
   part: UnifiedMessagePart,
+  role: "user" | "assistant",
   threadId: string,
   artifactsDir: string,
   seenHashes: Set<string>,
@@ -101,7 +111,19 @@ function toUIPart(
     case "file": {
       if (!part.base64Data) return null;
 
-      // Deduplicate by content hash
+      // User attachments → FileUIPart with data URL (renders as attachment tiles)
+      if (role === "user") {
+        const mediaType = part.mimeType ?? "application/octet-stream";
+        const url = `data:${mediaType};base64,${part.base64Data}`;
+        return {
+          type: "file",
+          mediaType,
+          filename: part.filename,
+          url,
+        };
+      }
+
+      // Assistant generated files → write to disk, return as markdown
       const hash = crypto
         .createHash("sha256")
         .update(Buffer.from(part.base64Data, "base64"))
@@ -139,7 +161,7 @@ export async function GET(
     return Response.json({ messages: [] });
   }
 
-  let data: { turns: unknown[] };
+  let data: { turns: unknown[]; uploads?: unknown[] };
   try {
     data = JSON.parse(readFileSync(filePath, "utf-8"));
   } catch {
@@ -150,14 +172,17 @@ export async function GET(
   const seenHashes = new Set<string>();
 
   // SDK converts turns to unified format with interleaved parts
-  const unified = convertTurnsToMessages(data.turns as Parameters<typeof convertTurnsToMessages>[0]);
+  const unified = convertTurnsToMessages(
+    data.turns as Parameters<typeof convertTurnsToMessages>[0],
+    data.uploads as Parameters<typeof convertTurnsToMessages>[1],
+  );
 
   // Map unified parts to AI SDK UIMessage format
   const messages: UIMessageOut[] = unified.map((msg) => ({
     role: msg.role,
     id: msg.id,
     parts: msg.parts
-      .map((part) => toUIPart(part, threadId, artifactsDir, seenHashes))
+      .map((part) => toUIPart(part, msg.role, threadId, artifactsDir, seenHashes))
       .filter((p): p is UIPart => p !== null),
   }));
 
