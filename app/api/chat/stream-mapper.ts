@@ -76,7 +76,11 @@ export function createSseStream(
       let accumulatedOutput = "";
       let toolInputFinalized = false;
       let currentToolName = "";
+      let pendingToolEnd = false; // tool_end fired but output not yet emitted
+      let streamedTextLength = 0; // total chars streamed via text events
+      let lateOutputToolIndex = 0; // for post-stream code_output (OpenAI)
       let streamClosed = false;
+      const toolsWithOutput = new Set<number>(); // tracks which tools got output-available
 
       /** Safe enqueue — guards against closed controller */
       function emit(data: Record<string, unknown>) {
@@ -111,6 +115,24 @@ export function createSseStream(
         }
       }
 
+      /** Flush a pending tool — ALWAYS emit output-available to maintain
+       *  correct event ordering (each tool must complete before next content).
+       *  Uses real output if available, "Execution complete" placeholder otherwise. */
+      function flushPendingTool() {
+        if (!pendingToolEnd) return;
+        emit({
+          type: "tool-output-available",
+          toolCallId: currentToolCallId(),
+          output: accumulatedOutput ? parseToolOutput(accumulatedOutput) : "Execution complete",
+        });
+        toolsWithOutput.add(toolCallCounter);
+        toolCallCounter++;
+        accumulatedInput = "";
+        accumulatedOutput = "";
+        toolInputFinalized = false;
+        pendingToolEnd = false;
+      }
+
       emit({ type: "start" });
 
       try {
@@ -131,6 +153,7 @@ export function createSseStream(
 
           switch (event.type) {
             case "text": {
+              flushPendingTool();
               const txt = event.text ?? "";
               // Filter out internal SDK/API debug messages
               if (/^File .+ is now available in the current working directory/i.test(txt.trim())) {
@@ -142,10 +165,12 @@ export function createSseStream(
                 id: currentTextId(),
                 delta: txt,
               });
+              streamedTextLength += txt.length;
               break;
             }
 
             case "tool_start": {
+              flushPendingTool();
               closeTextBlock();
               currentToolName = event.toolName ?? "code_execution";
               emit({
@@ -199,6 +224,14 @@ export function createSseStream(
 
             case "code_output": {
               accumulatedOutput += event.output ?? "";
+              if (pendingToolEnd) {
+                // Claude/Gemini: code_output after tool_end → flush now with real output
+                flushPendingTool();
+              }
+              // Late-arriving code_output (OpenAI post-stream) is intentionally
+              // NOT re-emitted — the tool already got output via flushPendingTool
+              // (either real output or "Execution complete" placeholder).
+              // Re-emitting would create duplicate tool-output-available events.
               break;
             }
 
@@ -230,19 +263,13 @@ export function createSseStream(
               if (event.output) {
                 accumulatedOutput += event.output;
               }
-              // Emit output only if there's actual content
-              const outputVal = accumulatedOutput
-                ? parseToolOutput(accumulatedOutput)
-                : "Execution complete";
-              emit({
-                type: "tool-output-available",
-                toolCallId: currentToolCallId(),
-                output: outputVal,
-              });
-              toolCallCounter++;
-              accumulatedInput = "";
-              accumulatedOutput = "";
-              toolInputFinalized = false;
+              // Always mark tool as ended. If we already have output
+              // (OpenAI/Gemini send code_output before tool_end), flush now.
+              // Otherwise defer — Claude sends code_output after tool_end.
+              pendingToolEnd = true;
+              if (accumulatedOutput) {
+                flushPendingTool();
+              }
               break;
             }
           }
@@ -250,7 +277,23 @@ export function createSseStream(
 
         console.log("[stream-mapper] send() completed. text length:", result?.text?.length ?? 0, "files:", result?.files?.length ?? 0, "codeArtifacts:", result?.codeArtifacts?.length ?? 0);
 
-        // Clean up trailing open text block
+        // Flush any pending tool output
+        flushPendingTool();
+
+        // Safety net: if SDK captured more text than we streamed
+        // (e.g. post-tool text missed during streaming), emit the tail
+        if (result?.text && result.text.length > streamedTextLength) {
+          const missedText = result.text.slice(streamedTextLength);
+          if (missedText.trim()) {
+            openTextBlock();
+            emit({
+              type: "text-delta",
+              id: currentTextId(),
+              delta: missedText,
+            });
+          }
+        }
+
         closeTextBlock();
 
         // Emit generated files as markdown images/links served via artifacts route

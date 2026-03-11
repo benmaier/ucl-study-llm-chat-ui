@@ -35,7 +35,7 @@ export function ImageLightbox({
         src={src}
         alt={alt ?? ""}
         className={cn(
-          "cursor-pointer rounded-lg border border-border/50 transition-opacity hover:opacity-80",
+          "my-4 cursor-pointer rounded-lg border border-border/50 transition-opacity hover:opacity-80",
           className,
         )}
         onClick={() => setOpen(true)}
