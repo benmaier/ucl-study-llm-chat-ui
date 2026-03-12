@@ -9,6 +9,7 @@ vi.mock("@/app/api/chat/conversation-store", () => ({
   getOrCreateConversation: vi.fn().mockResolvedValue({
     send: vi.fn().mockResolvedValue({ text: "", files: [], codeArtifacts: [] }),
   }),
+  artifactsDirForThread: vi.fn().mockReturnValue("/tmp/test-artifacts"),
 }));
 
 vi.mock("@/app/api/chat/stream-mapper", () => ({
@@ -56,7 +57,11 @@ describe("POST /api/chat", () => {
     const res = await POST(req);
     expect(res.status).toBe(200);
     expect(getOrCreateConversation).toHaveBeenCalledWith("t1");
-    expect(createSseStream).toHaveBeenCalledWith(expect.anything(), "How?", []);
+    expect(createSseStream).toHaveBeenCalledWith(
+      expect.anything(),
+      "How?",
+      expect.objectContaining({ threadId: "t1" }),
+    );
   });
 
   it("uses default thread ID when id is missing", async () => {
@@ -96,7 +101,7 @@ describe("POST /api/chat", () => {
     expect(createSseStream).toHaveBeenCalledWith(
       expect.anything(),
       "test message",
-      [],
+      expect.objectContaining({ threadId: "t2" }),
     );
   });
 

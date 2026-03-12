@@ -76,8 +76,10 @@ describe("conversation-store", () => {
   it("resumes from file when JSON exists on disk", async () => {
     const { Conversation } = await import("ucl-study-llm-chat-api");
 
-    // Write a fake persisted conversation
-    const filePath = path.join(testDataDir, "thread-disk.json");
+    // Write a fake persisted conversation in the subdirectory format
+    const threadDir = path.join(testDataDir, "thread-disk");
+    mkdirSync(threadDir, { recursive: true });
+    const filePath = path.join(threadDir, "conversation.json");
     writeFileSync(filePath, JSON.stringify({ id: "thread-disk", turns: [] }));
 
     const { getOrCreateConversation } = await import(
@@ -91,8 +93,8 @@ describe("conversation-store", () => {
     );
     expect((conv as any)._loadedFrom).toBe(filePath);
 
-    // Clean up test file
-    if (existsSync(filePath)) rmSync(filePath);
+    // Clean up test directory
+    if (existsSync(threadDir)) rmSync(threadDir, { recursive: true });
   });
 
   it("uses CHAT_PROVIDER env var for provider selection", async () => {
@@ -121,6 +123,6 @@ describe("conversation-store", () => {
     );
     const result = filePathForThread("../../etc/passwd");
     expect(result).not.toContain("..");
-    expect(result).toContain("______etc_passwd.json");
+    expect(result).toContain("______etc_passwd/conversation.json");
   });
 });
