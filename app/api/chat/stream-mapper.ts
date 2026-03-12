@@ -13,10 +13,13 @@
 
 import type { Conversation } from "ucl-study-llm-chat-api";
 import type { StreamEvent } from "ucl-study-llm-chat-api";
-import { readFileSync, mkdirSync, rmSync, copyFileSync } from "fs";
+import { readFileSync, mkdirSync, rmSync, copyFileSync, appendFileSync } from "fs";
 import { join, extname } from "path";
 import os from "os";
 import crypto from "crypto";
+
+/** Enable verbose per-event logging with DEBUG_STREAMS=1 */
+const DEBUG_STREAMS = !!process.env.DEBUG_STREAMS;
 
 const encoder = new TextEncoder();
 
@@ -50,6 +53,8 @@ export interface SseStreamOptions {
   artifactsDir: string;
   /** Thread ID for constructing artifact URLs. */
   threadId: string;
+  /** When set, append JSONL trace entries to this file path. */
+  traceFile?: string;
 }
 
 /**
@@ -61,10 +66,18 @@ export function createSseStream(
   message: string,
   options: SseStreamOptions,
 ): ReadableStream {
-  const { fileIds, artifactsDir, threadId } = options;
+  const { fileIds, artifactsDir, threadId, traceFile } = options;
 
   // Ensure artifacts directory exists
   mkdirSync(artifactsDir, { recursive: true });
+
+  /** Append a JSONL trace entry if traceFile is set. */
+  function traceLog(layer: string, type: string, data: Record<string, unknown>) {
+    if (!traceFile) return;
+    try {
+      appendFileSync(traceFile, JSON.stringify({ ts: new Date().toISOString(), layer, type, data }) + "\n");
+    } catch { /* best-effort */ }
+  }
 
   return new ReadableStream({
     async start(controller) {
@@ -77,14 +90,17 @@ export function createSseStream(
       let toolInputFinalized = false;
       let currentToolName = "";
       let pendingToolEnd = false; // tool_end fired but output not yet emitted
+      let currentlyInTool = false; // between tool_start and tool_end
       let streamedTextLength = 0; // total chars streamed via text events
-      let lateOutputToolIndex = 0; // for post-stream code_output (OpenAI)
       let streamClosed = false;
-      const toolsWithOutput = new Set<number>(); // tracks which tools got output-available
+      /** Tools that were flushed (counter advanced) before their output arrived.
+       *  Each entry holds the toolCallId to emit output-available for later. */
+      const deferredOutputTools: Array<{ toolCallId: string }> = [];
 
       /** Safe enqueue — guards against closed controller */
       function emit(data: Record<string, unknown>) {
         if (streamClosed) return;
+        traceLog("sse", String(data.type ?? "unknown"), data);
         try {
           controller.enqueue(sseBytes(data));
         } catch {
@@ -115,17 +131,22 @@ export function createSseStream(
         }
       }
 
-      /** Flush a pending tool — ALWAYS emit output-available to maintain
-       *  correct event ordering (each tool must complete before next content).
-       *  Uses real output if available, "Execution complete" placeholder otherwise. */
+      /** Flush a pending tool.  If real output is available, emit
+       *  tool-output-available immediately.  Otherwise defer — the
+       *  output-available event will be emitted when the matching
+       *  code_output arrives (typically post-stream for OpenAI). */
       function flushPendingTool() {
         if (!pendingToolEnd) return;
-        emit({
-          type: "tool-output-available",
-          toolCallId: currentToolCallId(),
-          output: accumulatedOutput ? parseToolOutput(accumulatedOutput) : "Execution complete",
-        });
-        toolsWithOutput.add(toolCallCounter);
+        if (accumulatedOutput) {
+          emit({
+            type: "tool-output-available",
+            toolCallId: currentToolCallId(),
+            output: parseToolOutput(accumulatedOutput),
+          });
+        } else {
+          // No output yet — defer emission until code_output arrives
+          deferredOutputTools.push({ toolCallId: currentToolCallId() });
+        }
         toolCallCounter++;
         accumulatedInput = "";
         accumulatedOutput = "";
@@ -136,20 +157,26 @@ export function createSseStream(
       emit({ type: "start" });
 
       try {
-        const sendOptions = fileIds?.length ? { fileIds } : undefined;
+        const sendOptions: Record<string, unknown> = {};
+        if (fileIds?.length) sendOptions.fileIds = fileIds;
+        if (traceFile) sendOptions.traceFile = traceFile;
+        const hasSendOptions = Object.keys(sendOptions).length > 0;
         const result = await conversation.send(message, (event: StreamEvent) => {
-          // Debug: log every SDK event
-          const logEvent = { ...event } as Record<string, unknown>;
-          if (logEvent.text && typeof logEvent.text === "string" && logEvent.text.length > 80) {
-            logEvent.text = logEvent.text.slice(0, 80) + "...";
+          // Debug: log every SDK event (enable with DEBUG_STREAMS=1)
+          if (DEBUG_STREAMS) {
+            const logEvent = { ...event } as Record<string, unknown>;
+            if (logEvent.text && typeof logEvent.text === "string" && logEvent.text.length > 80) {
+              logEvent.text = logEvent.text.slice(0, 80) + "...";
+            }
+            if (logEvent.code && typeof logEvent.code === "string" && logEvent.code.length > 80) {
+              logEvent.code = logEvent.code.slice(0, 80) + "...";
+            }
+            if (logEvent.output && typeof logEvent.output === "string" && logEvent.output.length > 80) {
+              logEvent.output = logEvent.output.slice(0, 80) + "...";
+            }
+            console.log("[stream-mapper] event:", JSON.stringify(logEvent));
           }
-          if (logEvent.code && typeof logEvent.code === "string" && logEvent.code.length > 80) {
-            logEvent.code = logEvent.code.slice(0, 80) + "...";
-          }
-          if (logEvent.output && typeof logEvent.output === "string" && logEvent.output.length > 80) {
-            logEvent.output = logEvent.output.slice(0, 80) + "...";
-          }
-          console.log("[stream-mapper] event:", JSON.stringify(logEvent));
+          traceLog("sdk", event.type, { type: event.type } as Record<string, unknown>);
 
           switch (event.type) {
             case "text": {
@@ -172,6 +199,7 @@ export function createSseStream(
             case "tool_start": {
               flushPendingTool();
               closeTextBlock();
+              currentlyInTool = true;
               currentToolName = event.toolName ?? "code_execution";
               emit({
                 type: "tool-input-start",
@@ -223,15 +251,25 @@ export function createSseStream(
             }
 
             case "code_output": {
-              accumulatedOutput += event.output ?? "";
-              if (pendingToolEnd) {
-                // Claude/Gemini: code_output after tool_end → flush now with real output
-                flushPendingTool();
+              const outputText = event.output ?? "";
+              if (currentlyInTool) {
+                // Output for the current tool (between tool_start and tool_end).
+                // Accumulate so tool_end finds it and flushes immediately.
+                accumulatedOutput += outputText;
+              } else if (deferredOutputTools.length > 0) {
+                // Output for a previously-flushed tool whose output-available
+                // was deferred (OpenAI pattern: code_output arrives post-stream).
+                const deferred = deferredOutputTools.shift()!;
+                emit({
+                  type: "tool-output-available",
+                  toolCallId: deferred.toolCallId,
+                  output: outputText ? parseToolOutput(outputText) : "Execution complete",
+                });
+              } else {
+                // Output after tool_end but before next event flushes it
+                // (Claude/Gemini pattern: code_output after tool_end).
+                accumulatedOutput += outputText;
               }
-              // Late-arriving code_output (OpenAI post-stream) is intentionally
-              // NOT re-emitted — the tool already got output via flushPendingTool
-              // (either real output or "Execution complete" placeholder).
-              // Re-emitting would create duplicate tool-output-available events.
               break;
             }
 
@@ -249,6 +287,7 @@ export function createSseStream(
             }
 
             case "tool_end": {
+              currentlyInTool = false;
               // Finalize input if not done yet
               if (!toolInputFinalized) {
                 emit({
@@ -273,12 +312,29 @@ export function createSseStream(
               break;
             }
           }
-        }, sendOptions);
+        }, hasSendOptions ? sendOptions : undefined);
 
-        console.log("[stream-mapper] send() completed. text length:", result?.text?.length ?? 0, "files:", result?.files?.length ?? 0, "codeArtifacts:", result?.codeArtifacts?.length ?? 0);
+        if (DEBUG_STREAMS) {
+          console.log("[stream-mapper] send() completed. text length:", result?.text?.length ?? 0, "files:", result?.files?.length ?? 0, "codeArtifacts:", result?.codeArtifacts?.length ?? 0);
+        }
+        traceLog("sdk", "SEND_RESULT", {
+          textLength: result?.text?.length ?? 0,
+          filesCount: result?.files?.length ?? 0,
+          codeArtifactsCount: result?.codeArtifacts?.length ?? 0,
+        });
 
         // Flush any pending tool output
         flushPendingTool();
+
+        // Emit placeholder for any deferred tools that never got code_output
+        for (const deferred of deferredOutputTools) {
+          emit({
+            type: "tool-output-available",
+            toolCallId: deferred.toolCallId,
+            output: "Execution complete",
+          });
+        }
+        deferredOutputTools.length = 0;
 
         // Safety net: if SDK captured more text than we streamed
         // (e.g. post-tool text missed during streaming), emit the tail
@@ -317,7 +373,7 @@ export function createSseStream(
               // Deduplicate by SHA-256 hash
               const hash = crypto.createHash("sha256").update(content).digest("hex");
               if (seenHashes.has(hash)) {
-                console.log(`[stream-mapper] Skipping duplicate: ${file.filename}`);
+                if (DEBUG_STREAMS) console.log(`[stream-mapper] Skipping duplicate: ${file.filename}`);
                 continue;
               }
               seenHashes.add(hash);

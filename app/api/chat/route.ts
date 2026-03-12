@@ -7,6 +7,8 @@
 
 import { getOrCreateConversation, artifactsDirForThread } from "./conversation-store";
 import { createSseStream } from "./stream-mapper";
+import { mkdirSync } from "fs";
+import path from "path";
 
 interface UIMessagePart {
   type: string;
@@ -104,10 +106,20 @@ export async function POST(req: Request) {
     finalMessage = `[Attached files:\n${fileList}]\n\n${messageText}`;
   }
 
+  // Create trace file if TRACE_DIR env var is set
+  let traceFile: string | undefined;
+  const traceDir = process.env.TRACE_DIR;
+  if (traceDir) {
+    mkdirSync(traceDir, { recursive: true });
+    traceFile = path.join(traceDir, `trace-${threadId}-${Date.now()}.jsonl`);
+    console.log(`[route] Tracing enabled → ${traceFile}`);
+  }
+
   const stream = createSseStream(conversation, finalMessage, {
     fileIds: fileIds.length > 0 ? fileIds : undefined,
     artifactsDir: artifactsDirForThread(threadId),
     threadId,
+    traceFile,
   });
 
   return new Response(stream, {
