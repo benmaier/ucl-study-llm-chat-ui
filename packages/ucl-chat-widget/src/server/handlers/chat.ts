@@ -1,12 +1,8 @@
 /**
  * Factory for the chat POST handler.
- *
- * Uses the SDK Conversation class for multi-turn state, persistence,
- * and code execution support. Streams responses using the assistant-ui
- * v1 SSE protocol.
  */
 
-import { ConversationStore } from "../conversation-store.js";
+import { resolveBackend } from "../conversation-store.js";
 import { createSseStream } from "../stream-mapper.js";
 import { mkdirSync } from "fs";
 import path from "path";
@@ -27,9 +23,6 @@ interface UIMessage {
   parts?: UIMessagePart[];
 }
 
-/**
- * Extract text from a single UIMessage (parts-based or content string).
- */
 function extractText(msg: UIMessage | undefined): string {
   if (!msg) return "";
   if (Array.isArray(msg.parts)) {
@@ -44,9 +37,6 @@ function extractText(msg: UIMessage | undefined): string {
   return "";
 }
 
-/**
- * Extract file parts from a UIMessage.
- */
 function extractFiles(
   msg: UIMessage | undefined,
 ): Array<{ url: string; mediaType: string; filename: string }> {
@@ -60,27 +50,19 @@ function extractFiles(
     }));
 }
 
-/**
- * Decode a data URL to a Buffer.
- */
 function dataUrlToBuffer(dataUrl: string): Buffer {
   const base64 = dataUrl.split(",")[1];
   return Buffer.from(base64, "base64");
 }
 
-/**
- * Creates a chat route handler with the given configuration.
- * Returns `{ POST }` for use as a Next.js route module.
- */
 export function createChatHandler(config: ChatRouteConfig) {
-  const store = ConversationStore.getInstance(config);
+  const backend = resolveBackend(config);
 
   async function POST(req: Request) {
     const body = await req.json();
     const threadId: string = body.id ?? "default";
     const messages: UIMessage[] = body.messages ?? [];
 
-    // Only send the latest user message — Conversation tracks history internally
     const lastUserMsg = messages.filter((m) => m.role === "user").pop();
     const messageText = extractText(lastUserMsg);
 
@@ -91,9 +73,8 @@ export function createChatHandler(config: ChatRouteConfig) {
       });
     }
 
-    const conversation = await store.getOrCreateConversation(threadId);
+    const conversation = await backend.getOrCreateConversation(threadId);
 
-    // Upload any attached files
     const fileParts = extractFiles(lastUserMsg);
     const fileIds: string[] = [];
     for (const file of fileParts) {
@@ -106,8 +87,6 @@ export function createChatHandler(config: ChatRouteConfig) {
       fileIds.push(uploaded.file_id);
     }
 
-    // Prepend filename context so models know original names
-    // (Gemini renames uploads to input_file_0, input_file_1, etc.)
     let finalMessage = messageText;
     if (fileParts.length > 0) {
       const fileList = fileParts
@@ -116,7 +95,6 @@ export function createChatHandler(config: ChatRouteConfig) {
       finalMessage = `[Attached files:\n${fileList}]\n\n${messageText}`;
     }
 
-    // Create trace file if traceDir is configured
     let traceFile: string | undefined;
     if (config.traceDir) {
       mkdirSync(config.traceDir, { recursive: true });
@@ -126,7 +104,7 @@ export function createChatHandler(config: ChatRouteConfig) {
 
     const stream = createSseStream(conversation, finalMessage, {
       fileIds: fileIds.length > 0 ? fileIds : undefined,
-      artifactsDir: store.artifactsDirForThread(threadId),
+      artifactsDir: backend.artifactsDirForThread(threadId),
       threadId,
       traceFile,
       apiBasePath: config.apiBasePath,

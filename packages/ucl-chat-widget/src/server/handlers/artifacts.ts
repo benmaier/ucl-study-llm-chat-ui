@@ -1,22 +1,16 @@
 /**
  * Factory for the artifacts file handler.
- *
- * Serves artifact files (plots, text outputs) for a conversation.
- * Files are stored in {conversationsDir}/{threadId}/artifacts/
+ * GET /api/threads/[id]/artifacts/[fileId]
  */
 
 import { readFileSync, existsSync } from "fs";
 import path from "path";
-import { ConversationStore } from "../conversation-store.js";
+import { resolveBackend } from "../conversation-store.js";
 
 import type { ChatRouteConfig } from "../../types/config.js";
 
-/**
- * Creates an artifacts route handler with the given configuration.
- * Returns `{ GET }` for use as a Next.js route module.
- */
 export function createArtifactsHandler(config: ChatRouteConfig) {
-  const store = ConversationStore.getInstance(config);
+  const backend = resolveBackend(config);
 
   async function GET(
     _req: Request,
@@ -24,9 +18,8 @@ export function createArtifactsHandler(config: ChatRouteConfig) {
   ) {
     const { id, fileId } = await context.params;
 
-    // Sanitize to prevent path traversal
     const safeFileId = fileId.replace(/[^a-zA-Z0-9_.-]/g, "_");
-    const filePath = path.join(store.artifactsDirForThread(id), safeFileId);
+    const filePath = path.join(backend.artifactsDirForThread(id), safeFileId);
 
     if (!existsSync(filePath)) {
       return new Response("Not found", { status: 404 });

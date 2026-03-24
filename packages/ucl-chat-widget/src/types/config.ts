@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { Conversation, ConversationWriter } from "ucl-study-llm-chat-api";
 
 /** A panel displayed in the right sidebar. */
 export interface SidebarPanel {
@@ -21,12 +22,47 @@ export interface ChatWidgetConfig {
   apiBasePath?: string;
 }
 
+/** Thread metadata for the sidebar. */
+export interface ThreadMeta {
+  remoteId: string;
+  title: string;
+  status: "regular";
+}
+
+/**
+ * Pluggable conversation storage backend.
+ *
+ * The default implementation (`FileConversationBackend`) uses the filesystem.
+ * Implement this interface to back conversations with a database instead.
+ */
+export interface ConversationBackend {
+  /** Get or create a Conversation instance for the given thread. */
+  getOrCreateConversation(threadId: string): Promise<Conversation>;
+  /** List all threads for the sidebar. */
+  listThreads(): Promise<{ threads: ThreadMeta[] }>;
+  /** Get metadata for a single thread, or null if not found. */
+  getThreadMeta(threadId: string): Promise<ThreadMeta | null>;
+  /** Update a thread's title. */
+  updateThreadTitle(threadId: string, title: string): Promise<void>;
+  /** Get raw conversation data (turns + uploads) for history loading. Returns null if not found. */
+  getConversationData(threadId: string): Promise<{ turns: unknown[]; uploads?: unknown[] } | null>;
+  /** Path to the artifacts directory for a given thread (for file storage). */
+  artifactsDirForThread(threadId: string): string;
+}
+
 /** Server-side configuration for route handler factories. */
 export interface ChatRouteConfig {
-  /** LLM provider */
-  provider: "anthropic" | "openai" | "gemini";
-  /** Directory for conversation persistence */
-  conversationsDir: string;
+  /**
+   * Custom conversation backend. When provided, `provider` and
+   * `conversationsDir` are ignored — the backend handles all storage.
+   */
+  backend?: ConversationBackend;
+  /** LLM provider — required when using the default filesystem backend */
+  provider?: "anthropic" | "openai" | "gemini";
+  /** Directory for conversation persistence — required when using the default filesystem backend */
+  conversationsDir?: string;
+  /** Additional writers (e.g. DatabaseWriter) injected alongside the default FileWriter */
+  extraWriters?: ConversationWriter[];
   /** Optional JSONL trace directory */
   traceDir?: string;
   /** Enable verbose stream logging */

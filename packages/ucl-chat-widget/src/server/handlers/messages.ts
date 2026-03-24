@@ -1,24 +1,19 @@
 /**
  * Factory for the thread messages handler.
- *
  * GET /api/threads/[id]/messages
- *
- * Reads conversation.json, uses the SDK to convert turns into
- * unified message format, then maps to AI SDK UIMessage parts.
  */
 
-import { ConversationStore } from "../conversation-store.js";
+import { resolveBackend } from "../conversation-store.js";
 import {
   convertTurnsToMessages,
   type UnifiedMessagePart,
 } from "ucl-study-llm-chat-api";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync } from "fs";
 import crypto from "crypto";
 import path from "path";
 
 import type { ChatRouteConfig } from "../../types/config.js";
 
-/** AI SDK UIMessage part types */
 interface TextUIPart {
   type: "text";
   text: string;
@@ -48,10 +43,6 @@ interface UIMessageOut {
   parts: UIPart[];
 }
 
-/**
- * Write base64 file data to the artifacts dir.
- * Returns the artifact filename (UUID + ext) for URL construction.
- */
 function writeArtifact(
   base64Data: string,
   filename: string,
@@ -71,9 +62,6 @@ function writeArtifact(
   return id;
 }
 
-/**
- * Detect whether base64 data represents an image (PNG or JPEG).
- */
 function isImageData(base64Data: string): boolean {
   const buf = Buffer.from(base64Data, "base64");
   const isPng =
@@ -82,12 +70,6 @@ function isImageData(base64Data: string): boolean {
   return isPng || isJpeg;
 }
 
-/**
- * Convert a UnifiedMessagePart to an AI SDK UIPart.
- *
- * User file parts -> FileUIPart (renders as attachment tiles via assistant-ui).
- * Assistant file parts -> written to disk, returned as markdown text.
- */
 function toUIPart(
   part: UnifiedMessagePart,
   role: "user" | "assistant",
@@ -113,19 +95,12 @@ function toUIPart(
     case "file": {
       if (!part.base64Data) return null;
 
-      // User attachments -> FileUIPart with data URL (renders as attachment tiles)
       if (role === "user") {
         const mediaType = part.mimeType ?? "application/octet-stream";
         const url = `data:${mediaType};base64,${part.base64Data}`;
-        return {
-          type: "file",
-          mediaType,
-          filename: part.filename,
-          url,
-        };
+        return { type: "file", mediaType, filename: part.filename, url };
       }
 
-      // Assistant generated files -> write to disk, return as markdown
       const hash = crypto
         .createHash("sha256")
         .update(Buffer.from(part.base64Data, "base64"))
@@ -133,31 +108,21 @@ function toUIPart(
       if (seenHashes.has(hash)) return null;
       seenHashes.add(hash);
 
-      const artifactId = writeArtifact(
-        part.base64Data,
-        part.filename,
-        artifactsDir,
-      );
+      const artifactId = writeArtifact(part.base64Data, part.filename, artifactsDir);
       const isImage = isImageData(part.base64Data);
       const displayName = isImage
         ? part.filename
         : part.filename.replace(/\.\w+$/, ".txt");
       const url = `${apiBasePath}/threads/${threadId}/artifacts/${artifactId}`;
-      const md = isImage
-        ? `![${displayName}](${url})`
-        : `[${displayName}](${url})`;
+      const md = isImage ? `![${displayName}](${url})` : `[${displayName}](${url})`;
 
       return { type: "text", text: `\n\n${md}\n\n` };
     }
   }
 }
 
-/**
- * Creates a messages route handler with the given configuration.
- * Returns `{ GET }` for use as a Next.js route module.
- */
 export function createMessagesHandler(config: ChatRouteConfig) {
-  const store = ConversationStore.getInstance(config);
+  const backend = resolveBackend(config);
   const apiBasePath = config.apiBasePath ?? "/api";
 
   async function GET(
@@ -165,29 +130,20 @@ export function createMessagesHandler(config: ChatRouteConfig) {
     context: { params: Promise<{ id: string }> },
   ) {
     const { id: threadId } = await context.params;
-    const filePath = store.filePathForThread(threadId);
 
-    if (!existsSync(filePath)) {
+    const data = await backend.getConversationData(threadId);
+    if (!data) {
       return Response.json({ messages: [] });
     }
 
-    let data: { turns: unknown[]; uploads?: unknown[] };
-    try {
-      data = JSON.parse(readFileSync(filePath, "utf-8"));
-    } catch {
-      return Response.json({ messages: [] });
-    }
-
-    const artifactsDir = store.artifactsDirForThread(threadId);
+    const artifactsDir = backend.artifactsDirForThread(threadId);
     const seenHashes = new Set<string>();
 
-    // SDK converts turns to unified format with interleaved parts
     const unified = convertTurnsToMessages(
       data.turns as Parameters<typeof convertTurnsToMessages>[0],
       data.uploads as Parameters<typeof convertTurnsToMessages>[1],
     );
 
-    // Map unified parts to AI SDK UIMessage format
     const messages: UIMessageOut[] = unified.map((msg) => ({
       role: msg.role,
       id: msg.id,
