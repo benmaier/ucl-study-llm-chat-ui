@@ -8,13 +8,15 @@ import {
   useThreadListItem,
 } from "@assistant-ui/react";
 import { PencilIcon } from "lucide-react";
+import { useChatWidgetConfig } from "../config-context.js";
 
 export const ThreadList: FC = () => {
+  const { threadListLabel } = useChatWidgetConfig();
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* Figma: "Your chats" 14px #afafaf */}
       <p className="mb-2 px-[18px] text-sm font-normal text-muted-foreground">
-        Your chats
+        {threadListLabel}
       </p>
       <div className="flex-1 overflow-y-auto">
         <ThreadListPrimitive.Root className="flex flex-col gap-0.5">
@@ -81,8 +83,6 @@ const ThreadListItem: FC = () => {
     );
   }
 
-  // Render title directly from useThreadListItem() instead of
-  // ThreadListItemPrimitive.Title which doesn't reflect list() metadata
   const displayTitle = title || "New Chat";
 
   return (

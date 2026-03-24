@@ -1,6 +1,17 @@
-@import "tailwindcss";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
+/*
+ * ucl-chat-widget theme variables.
+ *
+ * Import this file in your Next.js layout:
+ *   import "ucl-chat-widget/styles/globals.css";
+ *
+ * Prerequisites in the consuming app's own CSS:
+ *   @import "tailwindcss";
+ *   @import "tw-animate-css";
+ *   @import "shadcn/tailwind.css";
+ *
+ * The @theme inline block and CSS variables below will be picked up
+ * by Tailwind CSS 4 in the consuming app.
+ */
 
 @custom-variant dark (&:is(.dark *));
 
@@ -127,9 +138,4 @@
   html {
     @apply font-sans;
   }
-}
-
-/* Restore pointer cursor stripped by Tailwind preflight */
-button, [role="button"], a, summary, select, label[for] {
-  cursor: pointer;
 }
