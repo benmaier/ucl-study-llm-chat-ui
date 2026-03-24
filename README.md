@@ -1,36 +1,79 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# UCL Study LLM Chat Frontend
 
-## Getting Started
+Next.js 16 chat application for the UCL research study. Uses the [`ucl-chat-widget`](./packages/ucl-chat-widget/) package for the chat UI and [`ucl-study-llm-chat-api`](https://github.com/benmaier/ucl-study-llm-chat-api) SDK for LLM provider access (Anthropic, OpenAI, Gemini).
 
-First, run the development server:
+## Architecture
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+This repo is a thin consuming app that imports the reusable `ucl-chat-widget` package:
+
+```
+app/
+  page.tsx              → renders <ChatWidget config={...} />
+  layout.tsx            → fonts, dark mode, global styles
+  globals.css           → Tailwind theme + CSS variables
+  api/
+    chat-config.ts      → shared ChatRouteConfig (provider, storage dir)
+    chat/route.ts       → createChatHandler(config) — streams LLM responses
+    threads/route.ts    → createThreadsHandler(config) — lists threads
+    threads/[id]/...    → thread metadata, messages, artifacts routes
+packages/
+  ucl-chat-widget/      → reusable chat widget package (see its own README)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### How it works
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- **`app/page.tsx`** renders `<ChatWidget>` with study-specific sidebar content (scenario, data description, tasks)
+- **`app/api/chat-config.ts`** reads env vars and creates a `ChatRouteConfig` object
+- **Route files** are 3-line wrappers that call the widget's handler factories with the shared config
+- **API keys** are read by the SDK directly from `process.env` (not passed through config)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Setup
 
-## Learn More
+```bash
+# Install dependencies
+npm install
 
-To learn more about Next.js, take a look at the following resources:
+# Build the widget package (required after changes to packages/ucl-chat-widget/)
+cd packages/ucl-chat-widget && npm install --legacy-peer-deps && npm run build && cd ../..
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Create .env.local with your API keys
+cp .env.local.example .env.local
+# Edit .env.local with your keys
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Environment Variables
 
-## Deploy on Vercel
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | Yes (if using Anthropic) | — | Claude API key |
+| `OPENAI_API_KEY` | Yes (if using OpenAI) | — | OpenAI API key |
+| `GOOGLE_API_KEY` | Yes (if using Gemini) | — | Gemini API key |
+| `CHAT_PROVIDER` | No | `"anthropic"` | LLM provider: `"anthropic"`, `"openai"`, or `"gemini"` |
+| `CONVERSATIONS_DIR` | No | `"data/conversations"` | Directory for conversation persistence |
+| `TRACE_DIR` | No | — | When set, writes JSONL trace files for debugging |
+| `DEBUG_STREAMS` | No | — | When `"1"`, enables verbose streaming event logs |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Development
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+# Node.js v24 on this machine — use node directly instead of npx next
+node node_modules/next/dist/bin/next dev
+
+# Run tests
+npx vitest run
+```
+
+## Rebuilding the Widget Package
+
+After making changes to `packages/ucl-chat-widget/`:
+
+```bash
+cd packages/ucl-chat-widget
+npm run build
+cd ../..
+# The consuming app picks up changes automatically (linked via file: dependency)
+```
+
+## Related Repositories
+
+- [`ucl-study-llm-chat-api`](https://github.com/benmaier/ucl-study-llm-chat-api) — TypeScript SDK for Claude/OpenAI/Gemini with code execution, file handling, and streaming
