@@ -1,6 +1,17 @@
-@import "tailwindcss";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
+/*
+ * ucl-chat-widget theme variables.
+ *
+ * All CSS custom properties are namespaced with --llmchat- to avoid
+ * collisions with the parent app's variables.
+ *
+ * Import this file in your Next.js layout:
+ *   import "ucl-chat-widget/styles/globals.css";
+ *
+ * Prerequisites in the consuming app's own CSS:
+ *   @import "tailwindcss";
+ *   @import "tw-animate-css";
+ *   @import "shadcn/tailwind.css";
+ */
 
 @custom-variant dark (&:is(.dark *));
 
@@ -127,9 +138,4 @@
   html {
     @apply font-sans;
   }
-}
-
-/* Restore pointer cursor stripped by Tailwind preflight */
-button, [role="button"], a, summary, select, label[for] {
-  cursor: pointer;
 }

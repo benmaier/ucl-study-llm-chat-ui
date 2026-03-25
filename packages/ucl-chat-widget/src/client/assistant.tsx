@@ -1,0 +1,246 @@
+"use client";
+
+import { useState, useEffect, useMemo, useRef, type FC } from "react";
+import {
+  AssistantRuntimeProvider,
+  useAssistantRuntime,
+  useThread,
+  useThreadListItem,
+  unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
+} from "@assistant-ui/react";
+import {
+  useAISDKRuntime,
+  AssistantChatTransport,
+} from "@assistant-ui/react-ai-sdk";
+import { useChat, type UIMessage } from "@ai-sdk/react";
+import { createAssistantStream } from "assistant-stream";
+import { Thread } from "./components/assistant-ui/thread.js";
+import { LeftSidebar, type SidebarNavItem } from "./components/left-sidebar.js";
+import { RightSidebar } from "./components/right-sidebar.js";
+import { InfoCard } from "./components/info-card.js";
+import { ThreadList } from "./components/thread-list.js";
+import { PanelLeftIcon, PlusIcon } from "lucide-react";
+import { useChatWidgetConfig } from "./config-context.js";
+
+import type { unstable_RemoteThreadListAdapter as RemoteThreadListAdapter } from "@assistant-ui/react";
+
+/**
+ * Module-level ref for the current thread's remoteId.
+ * Updated by RemoteIdTracker (inside the provider tree) and read by
+ * the inner transport's prepareSendMessagesRequest callback.
+ */
+let currentRemoteId: string | null = null;
+
+function useThreadListAdapter(): RemoteThreadListAdapter {
+  const { apiBasePath } = useChatWidgetConfig();
+
+  return useMemo(
+    (): RemoteThreadListAdapter => ({
+      async list() {
+        const res = await fetch(`${apiBasePath}/threads`);
+        if (!res.ok) return { threads: [] };
+        return res.json();
+      },
+      async initialize(threadId) {
+        return { remoteId: threadId, externalId: undefined };
+      },
+      async fetch(threadId) {
+        const res = await fetch(`${apiBasePath}/threads/${threadId}`);
+        if (!res.ok)
+          return { remoteId: threadId, status: "regular" as const };
+        return res.json();
+      },
+      async rename(remoteId, newTitle) {
+        await fetch(`${apiBasePath}/threads/${remoteId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: newTitle }),
+        });
+      },
+      async archive() {},
+      async unarchive() {},
+      async delete() {},
+      async generateTitle(remoteId) {
+        try {
+          const res = await fetch(`${apiBasePath}/threads/${remoteId}`);
+          if (res.ok) {
+            const meta = await res.json();
+            if (meta?.title) {
+              return createAssistantStream((c) => {
+                c.appendText(meta.title);
+                c.close();
+              });
+            }
+          }
+        } catch {
+          // Fall through to empty stream
+        }
+        return createAssistantStream((c) => {
+          c.close();
+        });
+      },
+    }),
+    [apiBasePath],
+  );
+}
+
+/**
+ * Inner runtime hook — called by useRemoteThreadListRuntime to create
+ * a fresh chat runtime for each thread.
+ */
+const useInnerRuntime = () => {
+  const { apiBasePath } = useChatWidgetConfig();
+  const { id: threadItemId, remoteId } = useThreadListItem();
+
+  // Stable transport reference
+  const transportRef = useRef<AssistantChatTransport<UIMessage> | null>(null);
+  if (!transportRef.current) {
+    transportRef.current = new AssistantChatTransport({
+      api: `${apiBasePath}/chat`,
+      prepareSendMessagesRequest: async (options) => ({
+        ...options,
+        body: {
+          ...options.body,
+          id: currentRemoteId ?? (options as Record<string, unknown>).id,
+          messages: (options as Record<string, unknown>).messages,
+        },
+      }),
+    });
+  }
+
+  const chat = useChat({
+    id: threadItemId,
+    transport: transportRef.current,
+  });
+
+  const runtime = useAISDKRuntime(chat);
+  transportRef.current.setRuntime(runtime);
+
+  // Load historical messages for existing threads
+  const loadedRef = useRef<Set<string>>(new Set());
+  const chatRef = useRef(chat);
+  chatRef.current = chat;
+
+  useEffect(() => {
+    if (!remoteId) return;
+    if (loadedRef.current.has(remoteId)) return;
+
+    loadedRef.current.add(remoteId);
+
+    // If messages already exist (active conversation), skip loading
+    if (chatRef.current.messages.length > 0) return;
+
+    fetch(`${apiBasePath}/threads/${remoteId}/messages`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.messages?.length) {
+          chatRef.current.setMessages(data.messages);
+        }
+      })
+      .catch(console.error);
+  }, [remoteId, apiBasePath]);
+
+  return runtime;
+};
+
+/**
+ * Keeps the module-level currentRemoteId in sync with the active thread.
+ */
+const RemoteIdTracker: FC = () => {
+  const runtime = useAssistantRuntime();
+
+  useEffect(() => {
+    const sync = () => {
+      const state = runtime.thread.getState();
+      currentRemoteId = state.metadata?.remoteId ?? null;
+    };
+
+    const unsub = runtime.thread.subscribe(sync);
+    sync();
+
+    return unsub;
+  }, [runtime]);
+
+  return null;
+};
+
+const MainContent = () => {
+  const config = useChatWidgetConfig();
+  const runtime = useAssistantRuntime();
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const threadIsEmpty = useThread((s) => s.messages.length === 0);
+
+  const navActions: SidebarNavItem[] = useMemo(
+    () => [
+      {
+        icon: <PlusIcon className="size-4" />,
+        label: "New chat",
+        variant: "primary" as const,
+        disabled: threadIsEmpty,
+        onClick: () => runtime.switchToNewThread(),
+      },
+    ],
+    [runtime, threadIsEmpty],
+  );
+
+  return (
+    <div className="flex h-dvh w-full">
+      {/* Toggle button when sidebar is closed */}
+      {!sidebarOpen && (
+        <button
+          onClick={() => setSidebarOpen(true)}
+          className="absolute left-3 top-5 z-10 text-muted-foreground hover:text-sidebar-foreground"
+        >
+          <PanelLeftIcon className="size-[22px]" />
+        </button>
+      )}
+
+      {/* Left sidebar */}
+      {sidebarOpen && (
+        <LeftSidebar
+          title={config.sidebarTitle}
+          actions={navActions}
+          onClose={() => setSidebarOpen(false)}
+        >
+          <ThreadList />
+        </LeftSidebar>
+      )}
+
+      {/* Center chat — fills remaining space */}
+      <div className="flex-1 overflow-hidden">
+        <Thread />
+      </div>
+
+      {/* Right sidebar — only rendered if panels are provided */}
+      {config.sidebarPanels.length > 0 && (
+        <RightSidebar>
+          {config.sidebarPanels.map((panel, i) => (
+            <InfoCard
+              key={i}
+              title={panel.title}
+              defaultExpanded={panel.defaultExpanded}
+            >
+              {panel.content}
+            </InfoCard>
+          ))}
+        </RightSidebar>
+      )}
+    </div>
+  );
+};
+
+export const Assistant = () => {
+  const adapter = useThreadListAdapter();
+
+  const runtime = useRemoteThreadListRuntime({
+    runtimeHook: useInnerRuntime,
+    adapter,
+  });
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <RemoteIdTracker />
+      <MainContent />
+    </AssistantRuntimeProvider>
+  );
+};
