@@ -157,6 +157,52 @@ test.describe("Chat UI", () => {
     expect(firstCard!.y).toBeLessThan(secondCard!.y);
   });
 
+  test("first tool is complete with result before second tool starts", async ({ page }) => {
+    await sendMessage(
+      page,
+      "Execute TWO SEPARATE code blocks (do NOT combine them into one).\n" +
+        "Block 1: Calculate factorial of 10 with a for-loop. Print the result.\n" +
+        "Block 2: Generate the first 15 Fibonacci numbers. Print the list.\n" +
+        "After BOTH, write a brief summary.",
+    );
+
+    const toolCards = page.locator(".aui-tool-fallback-root");
+
+    // Wait for first tool card to appear
+    await toolCards.first().waitFor({ state: "visible", timeout: 60_000 });
+
+    // Expand the first tool card immediately while streaming is still going
+    const firstTrigger = toolCards.nth(0).locator(".aui-tool-fallback-trigger");
+    await firstTrigger.click();
+    await page.waitForTimeout(300);
+
+    // Wait for the second tool card to appear — this means tool 1 should be finishing
+    await toolCards.nth(1).waitFor({ state: "visible", timeout: 60_000 });
+
+    // First tool's spinner should stop soon after the second tool appears.
+    // Use Playwright's auto-retry: wait for the icon to NOT have animate-spin.
+    const firstIcon = toolCards.nth(0).locator(".aui-tool-fallback-trigger-icon");
+    await expect(firstIcon).not.toHaveClass(/animate-spin/, { timeout: 10_000 });
+
+    // First tool's shimmer should be gone (only present when running)
+    const firstShimmer = toolCards.nth(0).locator(".aui-tool-fallback-trigger-shimmer");
+    await expect(firstShimmer).toHaveCount(0);
+
+    // First tool should have result content visible (we expanded it earlier)
+    const firstResult = toolCards.nth(0).locator(".aui-tool-fallback-result-content");
+    await expect(firstResult).toBeVisible({ timeout: 10_000 });
+    const resultText = await firstResult.textContent();
+    expect(resultText).toBeTruthy();
+    expect(resultText!.length).toBeGreaterThan(0);
+
+    // Wait for everything to finish
+    await waitForStreamingDone(page);
+
+    // After streaming done, second tool should also be complete (no spinner)
+    const secondIcon = toolCards.nth(1).locator(".aui-tool-fallback-trigger-icon");
+    await expect(secondIcon).not.toHaveClass(/animate-spin/, { timeout: 10_000 });
+  });
+
   test("thread list shows conversation after sending message", async ({ page }) => {
     // Count threads before
     const threadsBefore = await page.locator("[data-slot='thread-list-item']").count();
