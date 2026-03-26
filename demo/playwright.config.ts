@@ -11,7 +11,7 @@ export default defineConfig({
     headless: true,
   },
   webServer: {
-    command: "node node_modules/next/dist/bin/next dev --port 3001",
+    command: "npx next dev --port 3001",
     port: 3001,
     reuseExistingServer: true,
     timeout: 30_000,
