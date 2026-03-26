@@ -2,6 +2,9 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* Scan widget dist for Tailwind class names (not auto-detected in node_modules) */
+@source "../../packages/widget/src";
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
