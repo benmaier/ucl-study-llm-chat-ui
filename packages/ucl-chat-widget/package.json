@@ -34,7 +34,7 @@
     "next": ">=15.0.0",
     "react": ">=19.0.0",
     "react-dom": ">=19.0.0",
-    "ucl-study-llm-chat-api": ">=1.0.0"
+    "ucl-study-llm-chat-api": "file:../../../ucl-study-llm-chat-api/ucl-study-llm-chat-api-1.0.0.tgz"
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.118",
@@ -60,7 +60,7 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "tsup": "^8.5.0",
     "typescript": "^5",
-    "ucl-study-llm-chat-api": "github:benmaier/ucl-study-llm-chat-api",
+    "ucl-study-llm-chat-api": "file:../../../ucl-study-llm-chat-api/ucl-study-llm-chat-api-1.0.0.tgz",
     "vitest": "^4.0.18"
   }
 }

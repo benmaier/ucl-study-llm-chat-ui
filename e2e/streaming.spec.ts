@@ -4,40 +4,37 @@
  * These tests run against the actual dev server with a real LLM provider.
  * They verify DOM state: tool cards appear, show results, text streams correctly.
  *
- * Prerequisites:
- *   - API keys in .env.local (ANTHROPIC_API_KEY or OPENAI_API_KEY)
- *   - CHAT_PROVIDER set appropriately
+ * The CHAT_PROVIDER env var determines which provider is tested.
+ * Provider-specific behavior is asserted where it differs:
+ *   - Anthropic/Gemini: tool outputs arrive inline → tool 1 completes before tool 2 starts
+ *   - OpenAI: tool outputs are deferred until stream ends → both tools complete at once
  *
  * Run:
- *   npx playwright test
- *   npx playwright test --headed   (to watch)
+ *   CHAT_PROVIDER=anthropic npx playwright test
+ *   CHAT_PROVIDER=openai npx playwright test --headed
+ *   CHAT_PROVIDER=gemini npx playwright test
  */
 
 import { test, expect, type Page } from "@playwright/test";
+
+const provider = process.env.CHAT_PROVIDER ?? "anthropic";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Wait for the page to be fully loaded with the chat UI visible. */
 async function waitForChatReady(page: Page) {
-  // Wait for the composer input to be visible
   await page.locator(".aui-composer-input").waitFor({ state: "visible", timeout: 15_000 });
 }
 
-/** Send a message and wait for the assistant response to start. */
 async function sendMessage(page: Page, text: string) {
   const input = page.locator(".aui-composer-input");
   await input.fill(text);
-  // Click the send button
   await page.locator(".aui-composer-send").click();
-  // Wait for an assistant message to appear
   await page.locator(".aui-assistant-message-root").first().waitFor({ state: "visible", timeout: 30_000 });
 }
 
-/** Wait for streaming to complete (no cancel button visible). */
 async function waitForStreamingDone(page: Page) {
-  // The cancel button disappears when streaming is done, send button reappears
   await page.locator(".aui-composer-send").waitFor({ state: "visible", timeout: 90_000 });
 }
 
@@ -45,22 +42,17 @@ async function waitForStreamingDone(page: Page) {
 // Tests
 // ---------------------------------------------------------------------------
 
-test.describe("Chat UI", () => {
+test.describe(`Chat UI [${provider}]`, () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await waitForChatReady(page);
   });
 
   test("page loads with sidebar and composer", async ({ page }) => {
-    // Left sidebar with thread list
     await expect(page.locator("text=AI Assist")).toBeVisible();
-
-    // Composer input is ready
     const input = page.locator(".aui-composer-input");
     await expect(input).toBeVisible();
     await expect(input).toBeEnabled();
-
-    // Right sidebar with study panels
     await expect(page.locator("text=Scenario")).toBeVisible();
   });
 
@@ -68,11 +60,6 @@ test.describe("Chat UI", () => {
     await sendMessage(page, "Say exactly: Hello from the test suite");
     await waitForStreamingDone(page);
 
-    // At least one assistant message with text content
-    const assistantMessages = page.locator(".aui-assistant-message-root");
-    await expect(assistantMessages.first()).toBeVisible();
-
-    // The response should contain some text
     const content = page.locator(".aui-assistant-message-content").first();
     const text = await content.textContent();
     expect(text!.length).toBeGreaterThan(0);
@@ -84,30 +71,23 @@ test.describe("Chat UI", () => {
       "Execute this Python code: print(2 + 2). Show me the result.",
     );
 
-    // Wait for a tool card to appear
     const toolCard = page.locator(".aui-tool-fallback-root").first();
     await toolCard.waitFor({ state: "visible", timeout: 60_000 });
-
-    // Wait for streaming to complete
     await waitForStreamingDone(page);
 
-    // Trigger should show "Used tool" (completed status, not "running")
+    // Completed: no spinner, "Used tool" label
     const trigger = toolCard.locator(".aui-tool-fallback-trigger");
     await expect(trigger).toContainText("Used tool");
+    const icon = toolCard.locator(".aui-tool-fallback-trigger-icon");
+    await expect(icon).not.toHaveClass(/animate-spin/);
 
-    // Click trigger to expand and see args + result
+    // Expand and verify args + result
     await trigger.click();
-    await page.waitForTimeout(300); // animation
-
-    // Code input should be visible after expanding
-    const toolArgs = toolCard.locator(".aui-tool-fallback-args");
-    await expect(toolArgs).toBeVisible();
-
-    // Result section should be visible with content
-    const toolResult = toolCard.locator(".aui-tool-fallback-result-content");
-    await expect(toolResult).toBeVisible();
-    const resultText = await toolResult.textContent();
-    expect(resultText).toBeTruthy();
+    await page.waitForTimeout(300);
+    await expect(toolCard.locator(".aui-tool-fallback-args")).toBeVisible();
+    const result = toolCard.locator(".aui-tool-fallback-result-content");
+    await expect(result).toBeVisible();
+    expect(await result.textContent()).toBeTruthy();
   });
 
   test("multiple tool calls render in order with results", async ({ page }) => {
@@ -119,103 +99,151 @@ test.describe("Chat UI", () => {
         "After both, summarize the results.",
     );
 
-    // Wait for streaming to complete
     await waitForStreamingDone(page);
 
-    // Should have at least 2 tool cards
     const toolCards = page.locator(".aui-tool-fallback-root");
     const count = await toolCards.count();
     expect(count).toBeGreaterThanOrEqual(2);
 
-    // Both should show "Used tool" (completed, not running)
+    // Both complete after stream ends
     for (let i = 0; i < Math.min(count, 2); i++) {
       const trigger = toolCards.nth(i).locator(".aui-tool-fallback-trigger");
       await expect(trigger).toContainText("Used tool");
+      await expect(
+        toolCards.nth(i).locator(".aui-tool-fallback-trigger-icon"),
+      ).not.toHaveClass(/animate-spin/);
     }
 
-    // Expand first card and verify it has a result
-    const firstTrigger = toolCards.nth(0).locator(".aui-tool-fallback-trigger");
-    await firstTrigger.click();
-    await page.waitForTimeout(300);
-    const firstResult = toolCards.nth(0).locator(".aui-tool-fallback-result-content");
-    await expect(firstResult).toBeVisible();
-    const firstText = await firstResult.textContent();
-    expect(firstText).toBeTruthy();
+    // Both have results when expanded
+    for (let i = 0; i < Math.min(count, 2); i++) {
+      await toolCards.nth(i).locator(".aui-tool-fallback-trigger").click();
+      await page.waitForTimeout(300);
+      const result = toolCards.nth(i).locator(".aui-tool-fallback-result-content");
+      await expect(result).toBeVisible();
+      expect(await result.textContent()).toBeTruthy();
+    }
 
-    // Expand second card and verify it has a result
-    const secondTrigger = toolCards.nth(1).locator(".aui-tool-fallback-trigger");
-    await secondTrigger.click();
-    await page.waitForTimeout(300);
-    const secondResult = toolCards.nth(1).locator(".aui-tool-fallback-result-content");
-    await expect(secondResult).toBeVisible();
-    const secondText = await secondResult.textContent();
-    expect(secondText).toBeTruthy();
-
-    // Tool cards should appear in DOM order (first above second)
-    const firstCard = await toolCards.nth(0).boundingBox();
-    const secondCard = await toolCards.nth(1).boundingBox();
-    expect(firstCard!.y).toBeLessThan(secondCard!.y);
+    // DOM order: first tool above second
+    const firstBox = await toolCards.nth(0).boundingBox();
+    const secondBox = await toolCards.nth(1).boundingBox();
+    expect(firstBox!.y).toBeLessThan(secondBox!.y);
   });
 
-  test("first tool is complete with result before second tool starts", async ({ page }) => {
-    await sendMessage(
-      page,
-      "Execute TWO SEPARATE code blocks (do NOT combine them into one).\n" +
-        "Block 1: Calculate factorial of 10 with a for-loop. Print the result.\n" +
-        "Block 2: Generate the first 15 Fibonacci numbers. Print the list.\n" +
-        "After BOTH, write a brief summary.",
-    );
+  // -------------------------------------------------------------------------
+  // Provider-specific multi-tool lifecycle test
+  //
+  // Anthropic/Gemini send code_output inline (before or right after tool_end),
+  // so tool 1 should be visually complete before tool 2 even starts.
+  //
+  // OpenAI defers code_output until after the entire stream ends, so both
+  // tools stay "running" until the stream finishes, then complete at once.
+  // -------------------------------------------------------------------------
 
-    const toolCards = page.locator(".aui-tool-fallback-root");
+  test("tool 1 completes with result BEFORE tool 2 starts (inline output — anthropic/gemini)", async ({ page }) => {
+    test.skip(provider === "openai", "OpenAI defers tool outputs until stream ends");
+    {
+      await sendMessage(
+        page,
+        "Execute TWO SEPARATE code blocks (do NOT combine them into one).\n" +
+          "Block 1: Calculate factorial of 10 with a for-loop. Print the result.\n" +
+          "After Block 1, write a sentence describing what factorial means.\n" +
+          "Block 2: Generate the first 15 Fibonacci numbers. Print the list.\n" +
+          "After Block 2, write a brief summary of both results.",
+      );
 
-    // Wait for first tool card to appear
-    await toolCards.first().waitFor({ state: "visible", timeout: 60_000 });
+      const toolCards = page.locator(".aui-tool-fallback-root");
 
-    // Expand the first tool card immediately while streaming is still going
-    const firstTrigger = toolCards.nth(0).locator(".aui-tool-fallback-trigger");
-    await firstTrigger.click();
-    await page.waitForTimeout(300);
+      // Wait for first tool card and expand it
+      await toolCards.first().waitFor({ state: "visible", timeout: 60_000 });
+      await toolCards.nth(0).locator(".aui-tool-fallback-trigger").click();
+      await page.waitForTimeout(300);
 
-    // Wait for the second tool card to appear — this means tool 1 should be finishing
-    await toolCards.nth(1).waitFor({ state: "visible", timeout: 60_000 });
+      // Wait for the second tool card to appear
+      await toolCards.nth(1).waitFor({ state: "visible", timeout: 60_000 });
 
-    // First tool's spinner should stop soon after the second tool appears.
-    // Use Playwright's auto-retry: wait for the icon to NOT have animate-spin.
-    const firstIcon = toolCards.nth(0).locator(".aui-tool-fallback-trigger-icon");
-    await expect(firstIcon).not.toHaveClass(/animate-spin/, { timeout: 10_000 });
+      // At this point, tool 1 should already be complete (inline output)
+      const firstIcon = toolCards.nth(0).locator(".aui-tool-fallback-trigger-icon");
+      await expect(firstIcon).not.toHaveClass(/animate-spin/, { timeout: 10_000 });
 
-    // First tool's shimmer should be gone (only present when running)
-    const firstShimmer = toolCards.nth(0).locator(".aui-tool-fallback-trigger-shimmer");
-    await expect(firstShimmer).toHaveCount(0);
+      // Shimmer gone
+      await expect(
+        toolCards.nth(0).locator(".aui-tool-fallback-trigger-shimmer"),
+      ).toHaveCount(0);
 
-    // First tool should have result content visible (we expanded it earlier)
-    const firstResult = toolCards.nth(0).locator(".aui-tool-fallback-result-content");
-    await expect(firstResult).toBeVisible({ timeout: 10_000 });
-    const resultText = await firstResult.textContent();
-    expect(resultText).toBeTruthy();
-    expect(resultText!.length).toBeGreaterThan(0);
+      // Result visible with real content
+      const firstResult = toolCards.nth(0).locator(".aui-tool-fallback-result-content");
+      await expect(firstResult).toBeVisible({ timeout: 10_000 });
+      const resultText = await firstResult.textContent();
+      expect(resultText).toBeTruthy();
+      expect(resultText!.length).toBeGreaterThan(0);
 
-    // Wait for everything to finish
-    await waitForStreamingDone(page);
+      // Wait for everything to finish, verify tool 2 also completes
+      await waitForStreamingDone(page);
+      await expect(
+        toolCards.nth(1).locator(".aui-tool-fallback-trigger-icon"),
+      ).not.toHaveClass(/animate-spin/, { timeout: 10_000 });
+    }
+  });
 
-    // After streaming done, second tool should also be complete (no spinner)
-    const secondIcon = toolCards.nth(1).locator(".aui-tool-fallback-trigger-icon");
-    await expect(secondIcon).not.toHaveClass(/animate-spin/, { timeout: 10_000 });
+  test("both tools complete together after stream ends (deferred output — openai)", async ({ page }) => {
+    test.skip(provider !== "openai", "Only OpenAI defers tool outputs");
+    {
+      await sendMessage(
+        page,
+        "Execute TWO SEPARATE code blocks (do NOT combine them into one).\n" +
+          "Block 1: Calculate factorial of 10 with a for-loop. Print the result.\n" +
+          "After Block 1, write a sentence describing what factorial means.\n" +
+          "Block 2: Generate the first 15 Fibonacci numbers. Print the list.\n" +
+          "After Block 2, write a brief summary of both results.",
+      );
+
+      const toolCards = page.locator(".aui-tool-fallback-root");
+
+      // Wait for first tool card and expand it
+      await toolCards.first().waitFor({ state: "visible", timeout: 60_000 });
+      await toolCards.nth(0).locator(".aui-tool-fallback-trigger").click();
+      await page.waitForTimeout(300);
+
+      // Wait for second tool card
+      await toolCards.nth(1).waitFor({ state: "visible", timeout: 60_000 });
+
+      // OpenAI deferred pattern: tool 1 is STILL RUNNING when tool 2 appears.
+      // The code_output events arrive only after the entire stream ends.
+      // Verify tool 1 still shows spinner at this point.
+      const firstIcon = toolCards.nth(0).locator(".aui-tool-fallback-trigger-icon");
+      const classes = await firstIcon.getAttribute("class");
+      expect(classes).toContain("animate-spin");
+
+      // Wait for stream to finish — outputs arrive now
+      await waitForStreamingDone(page);
+
+      // NOW both tools should be complete
+      await expect(firstIcon).not.toHaveClass(/animate-spin/, { timeout: 10_000 });
+      await expect(
+        toolCards.nth(1).locator(".aui-tool-fallback-trigger-icon"),
+      ).not.toHaveClass(/animate-spin/, { timeout: 10_000 });
+
+      // Both should have results when expanded
+      const firstResult = toolCards.nth(0).locator(".aui-tool-fallback-result-content");
+      await expect(firstResult).toBeVisible({ timeout: 10_000 });
+      expect(await firstResult.textContent()).toBeTruthy();
+
+      await toolCards.nth(1).locator(".aui-tool-fallback-trigger").click();
+      await page.waitForTimeout(300);
+      const secondResult = toolCards.nth(1).locator(".aui-tool-fallback-result-content");
+      await expect(secondResult).toBeVisible({ timeout: 10_000 });
+      expect(await secondResult.textContent()).toBeTruthy();
+    }
   });
 
   test("thread list shows conversation after sending message", async ({ page }) => {
-    // Count threads before
     const threadsBefore = await page.locator("[data-slot='thread-list-item']").count();
 
     await sendMessage(page, "Hello, this is a test message for thread list");
     await waitForStreamingDone(page);
 
-    // A new thread should appear (or existing one should be there)
-    // The thread list may take a moment to refresh
     await page.waitForTimeout(1000);
     const threadsAfter = await page.locator("[data-slot='thread-list-item']").count();
-
-    // We should have at least as many threads as before (new one was created)
     expect(threadsAfter).toBeGreaterThanOrEqual(threadsBefore);
   });
 });
