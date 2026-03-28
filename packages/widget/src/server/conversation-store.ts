@@ -100,25 +100,30 @@ export class FileConversationBackend implements ConversationBackend {
 
     let conversation: Conversation;
 
+    const apiKey = this.config.apiKey;
+
     if (existsSync(filePath)) {
       try {
         conversation = await Conversation.loadFromFile(filePath, {
           provider: this.provider,
           writers,
-        });
+          ...(apiKey ? { apiKey } : {}),
+        } as any);
       } catch {
         conversation = new Conversation({
           provider: this.provider,
           id: threadId,
           writers,
-        });
+          ...(apiKey ? { apiKey } : {}),
+        } as any);
       }
     } else {
       conversation = new Conversation({
         provider: this.provider,
         id: threadId,
         writers,
-      });
+        ...(apiKey ? { apiKey } : {}),
+      } as any);
     }
 
     this.cache.set(threadId, { conversation, lastAccessedAt: Date.now() });
