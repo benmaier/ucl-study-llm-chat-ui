@@ -1,6 +1,6 @@
 {
   "name": "ucl-chat-widget",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reusable LLM chat widget for Next.js applications",
   "type": "module",
   "main": "./dist/index.js",
@@ -26,7 +26,10 @@
   ],
   "scripts": {
     "build": "tsup",
-    "dev": "tsup --watch"
+    "dev": "tsup --watch",
+    "prepare": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "peerDependencies": {
     "next": ">=15.0.0",
@@ -58,6 +61,7 @@
     "@types/react-syntax-highlighter": "^15.5.13",
     "tsup": "^8.5.0",
     "typescript": "^5",
-    "ucl-study-llm-chat-api": "github:benmaier/ucl-study-llm-chat-api"
+    "ucl-study-llm-chat-api": "github:benmaier/ucl-study-llm-chat-api",
+    "vitest": "^4.0.18"
   }
 }

@@ -69,4 +69,8 @@ export interface ChatRouteConfig {
   debugStreams?: boolean;
   /** API route base path — must match client apiBasePath (default: "/api") */
   apiBasePath?: string;
+  /** API key for the LLM provider. When set, passed to the Conversation
+   *  constructor instead of relying on process.env. Critical for serverless
+   *  environments where concurrent requests share the same process. */
+  apiKey?: string;
 }

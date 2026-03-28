@@ -23,7 +23,7 @@ interface UIMessage {
   parts?: UIMessagePart[];
 }
 
-function extractText(msg: UIMessage | undefined): string {
+export function extractText(msg: UIMessage | undefined): string {
   if (!msg) return "";
   if (Array.isArray(msg.parts)) {
     return msg.parts
@@ -37,7 +37,7 @@ function extractText(msg: UIMessage | undefined): string {
   return "";
 }
 
-function extractFiles(
+export function extractFiles(
   msg: UIMessage | undefined,
 ): Array<{ url: string; mediaType: string; filename: string }> {
   if (!msg || !Array.isArray(msg.parts)) return [];
@@ -50,7 +50,7 @@ function extractFiles(
     }));
 }
 
-function dataUrlToBuffer(dataUrl: string): Buffer {
+export function dataUrlToBuffer(dataUrl: string): Buffer {
   const base64 = dataUrl.split(",")[1];
   return Buffer.from(base64, "base64");
 }
