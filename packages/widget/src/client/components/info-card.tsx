@@ -25,7 +25,7 @@ export const InfoCard: FC<InfoCardProps> = ({
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       {/* Figma: 300px wide, bg #2d2b37, border #2f2f32, radius 10-11px */}
-      <div className="w-[300px] rounded-[11px] border border-border bg-card p-[23px]">
+      <div className="w-full rounded-[11px] border border-border bg-card p-[23px]">
         {/* Figma: title 18px Inter Regular */}
         <h3 className="mb-3 text-lg font-normal text-card-foreground">
           {title}

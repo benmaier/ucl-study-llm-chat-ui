@@ -19,7 +19,8 @@ import { LeftSidebar, type SidebarNavItem } from "./components/left-sidebar.js";
 import { RightSidebar } from "./components/right-sidebar.js";
 import { InfoCard } from "./components/info-card.js";
 import { ThreadList } from "./components/thread-list.js";
-import { PanelLeftIcon, PlusIcon } from "lucide-react";
+import { useCallback } from "react";
+import { PanelLeftIcon, PanelRightIcon, PlusIcon } from "lucide-react";
 import { useChatWidgetConfig } from "./config-context.js";
 
 import type { unstable_RemoteThreadListAdapter as RemoteThreadListAdapter } from "@assistant-ui/react";
@@ -137,7 +138,12 @@ const useInnerRuntime = () => {
           chatRef.current.setMessages(data.messages);
         }
       })
-      .catch(console.error);
+      .catch(console.error)
+      .finally(() => {
+        requestAnimationFrame(() => {
+          document.querySelector<HTMLTextAreaElement>(".aui-composer-input")?.focus();
+        });
+      });
   }, [remoteId, apiBasePath]);
 
   return runtime;
@@ -164,11 +170,48 @@ const RemoteIdTracker: FC = () => {
   return null;
 };
 
+/** Hook that tracks a media query and returns whether it matches. */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(false);
+
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    setMatches(mql.matches);
+    const handler = (e: MediaQueryListEvent) => setMatches(e.matches);
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, [query]);
+
+  return matches;
+}
+
 const MainContent = () => {
   const config = useChatWidgetConfig();
   const runtime = useAssistantRuntime();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
   const threadIsEmpty = useThread((s) => s.messages.length === 0);
+
+  // Responsive breakpoints:
+  //   < 768px  → both sidebars auto-hidden
+  //   768–1100 → left visible, right auto-hidden
+  //   > 1100   → all visible
+  const isNarrow = useMediaQuery("(max-width: 767px)");
+  const isMedium = useMediaQuery("(min-width: 768px) and (max-width: 1099px)");
+
+  // Manual toggle state — null means "use auto behavior"
+  const [leftManual, setLeftManual] = useState<boolean | null>(null);
+  const [rightManual, setRightManual] = useState<boolean | null>(null);
+
+  // Reset manual overrides when breakpoint changes
+  useEffect(() => { setLeftManual(null); }, [isNarrow]);
+  useEffect(() => { setRightManual(null); }, [isMedium, isNarrow]);
+
+  // Resolved visibility: manual override takes precedence over auto
+  const hasPanels = config.sidebarPanels.length > 0;
+  const leftOpen = leftManual ?? (!isNarrow);
+  const rightOpen = hasPanels && (rightManual ?? (!isNarrow && !isMedium));
+
+  const toggleLeft = useCallback(() => setLeftManual((prev) => !(prev ?? !isNarrow)), [isNarrow]);
+  const toggleRight = useCallback(() => setRightManual((prev) => !(prev ?? (!isNarrow && !isMedium))), [isNarrow, isMedium]);
 
   const navActions: SidebarNavItem[] = useMemo(
     () => [
@@ -177,7 +220,14 @@ const MainContent = () => {
         label: "New chat",
         variant: "primary" as const,
         disabled: threadIsEmpty,
-        onClick: () => runtime.switchToNewThread(),
+        onClick: () => {
+          runtime.switchToNewThread();
+          // Focus the composer input after React re-renders the new thread
+          requestAnimationFrame(() => {
+            const input = document.querySelector<HTMLTextAreaElement>(".aui-composer-input");
+            input?.focus();
+          });
+        },
       },
     ],
     [runtime, threadIsEmpty],
@@ -185,22 +235,30 @@ const MainContent = () => {
 
   return (
     <div className="flex h-dvh w-full">
-      {/* Toggle button when sidebar is closed */}
-      {!sidebarOpen && (
+      {/* Toggle buttons when sidebars are closed */}
+      {!leftOpen && (
         <button
-          onClick={() => setSidebarOpen(true)}
+          onClick={toggleLeft}
           className="absolute left-3 top-5 z-10 text-muted-foreground hover:text-sidebar-foreground"
         >
           <PanelLeftIcon className="size-[22px]" />
         </button>
       )}
+      {!rightOpen && hasPanels && (
+        <button
+          onClick={toggleRight}
+          className="absolute right-3 top-5 z-10 text-muted-foreground hover:text-sidebar-foreground"
+        >
+          <PanelRightIcon className="size-[22px]" />
+        </button>
+      )}
 
       {/* Left sidebar */}
-      {sidebarOpen && (
+      {leftOpen && (
         <LeftSidebar
           title={config.sidebarTitle}
           actions={navActions}
-          onClose={() => setSidebarOpen(false)}
+          onClose={toggleLeft}
         >
           <ThreadList />
         </LeftSidebar>
@@ -211,9 +269,9 @@ const MainContent = () => {
         <Thread />
       </div>
 
-      {/* Right sidebar — only rendered if panels are provided */}
-      {config.sidebarPanels.length > 0 && (
-        <RightSidebar>
+      {/* Right sidebar */}
+      {rightOpen && (
+        <RightSidebar onClose={toggleRight}>
           {config.sidebarPanels.map((panel, i) => (
             <InfoCard
               key={i}
