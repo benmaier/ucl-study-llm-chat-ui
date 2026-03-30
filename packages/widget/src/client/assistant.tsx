@@ -43,6 +43,12 @@ function useThreadListAdapter(): RemoteThreadListAdapter {
         return res.json();
       },
       async initialize(threadId) {
+        // Fetch current thread list to ensure correct numbering across tabs
+        try {
+          await fetch(`${apiBasePath}/threads`);
+        } catch {
+          // Best-effort — proceed even if refresh fails
+        }
         return { remoteId: threadId, externalId: undefined };
       },
       async fetch(threadId) {
@@ -165,6 +171,48 @@ const RemoteIdTracker: FC = () => {
     sync();
 
     return unsub;
+  }, [runtime]);
+
+  return null;
+};
+
+/**
+ * Keeps the thread list in sync across tabs.
+ * - Polls every 10 seconds
+ * - Refreshes on tab activation (visibilitychange)
+ *
+ * Uses assistant-ui internals (_loadThreadsPromise) to force a re-fetch.
+ * Wrapped in try/catch so it silently degrades if internals change.
+ */
+const ThreadListSyncer: FC = () => {
+  const runtime = useAssistantRuntime();
+
+  useEffect(() => {
+    const refreshThreadList = () => {
+      try {
+        const core = (runtime as any)._core?.threads;
+        if (core && "_loadThreadsPromise" in core) {
+          core._loadThreadsPromise = null;
+          core.getLoadThreadsPromise();
+        }
+      } catch {
+        // Silently ignore if internals change
+      }
+    };
+
+    const interval = setInterval(refreshThreadList, 10_000);
+
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        refreshThreadList();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [runtime]);
 
   return null;
@@ -298,6 +346,7 @@ export const Assistant = () => {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <RemoteIdTracker />
+      <ThreadListSyncer />
       <MainContent />
     </AssistantRuntimeProvider>
   );
