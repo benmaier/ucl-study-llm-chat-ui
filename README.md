@@ -1,79 +1,107 @@
-# UCL Study LLM Chat Frontend
+# ucl-chat-widget
 
-Next.js 16 chat application for the UCL research study. Uses the [`ucl-chat-widget`](./packages/ucl-chat-widget/) package for the chat UI and [`ucl-study-llm-chat-api`](https://github.com/benmaier/ucl-study-llm-chat-api) SDK for LLM provider access (Anthropic, OpenAI, Gemini).
+A reusable LLM chat widget for Next.js applications with multi-provider support (Anthropic, OpenAI, Gemini), conversation persistence, code execution rendering, and a pluggable storage backend.
 
-## Architecture
+## Repository Structure
 
-This repo is a thin consuming app that imports the reusable `ucl-chat-widget` package:
+This is an npm workspaces monorepo:
 
 ```
-app/
-  page.tsx              → renders <ChatWidget config={...} />
-  layout.tsx            → fonts, dark mode, global styles
-  globals.css           → Tailwind theme + CSS variables
-  api/
-    chat-config.ts      → shared ChatRouteConfig (provider, storage dir)
-    chat/route.ts       → createChatHandler(config) — streams LLM responses
-    threads/route.ts    → createThreadsHandler(config) — lists threads
-    threads/[id]/...    → thread metadata, messages, artifacts routes
-packages/
-  ucl-chat-widget/      → reusable chat widget package (see its own README)
+/
+├── packages/widget/     ← the ucl-chat-widget npm package
+│   ├── src/
+│   │   ├── client/      ← <ChatWidget>, components, config context
+│   │   ├── server/      ← route handler factories, ConversationBackend, SSE stream mapper
+│   │   ├── types/       ← ChatWidgetConfig, ChatRouteConfig, ConversationBackend
+│   │   ├── styles/      ← CSS variables (--llmchat-* namespaced)
+│   │   └── __tests__/   ← 45 vitest unit tests
+│   ├── package.json     ← name: "ucl-chat-widget" (v0.2.5)
+│   └── tsup.config.ts
+├── demo/                ← Next.js reference app + Playwright E2E tests
+│   ├── app/             ← thin route wrappers, page.tsx
+│   ├── e2e/             ← 7 Playwright tests (provider-specific)
+│   └── package.json     ← name: "ucl-chat-demo"
+├── docs/                ← detailed documentation
+└── package.json         ← workspace root (private)
 ```
 
-### How it works
-
-- **`app/page.tsx`** renders `<ChatWidget>` with study-specific sidebar content (scenario, data description, tasks)
-- **`app/api/chat-config.ts`** reads env vars and creates a `ChatRouteConfig` object
-- **Route files** are 3-line wrappers that call the widget's handler factories with the shared config
-- **API keys** are read by the SDK directly from `process.env` (not passed through config)
-
-## Setup
+## Quick Start
 
 ```bash
-# Install dependencies
-npm install
+# Clone and install
+git clone git@github.com:benmaier/ucl-study-llm-chat-ui.git
+cd ucl-study-llm-chat-ui
+npm install --legacy-peer-deps
 
-# Build the widget package (required after changes to packages/ucl-chat-widget/)
-cd packages/ucl-chat-widget && npm install --legacy-peer-deps && npm run build && cd ../..
-
-# Create .env.local with your API keys
-cp .env.local.example .env.local
-# Edit .env.local with your keys
-```
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | Yes (if using Anthropic) | — | Claude API key |
-| `OPENAI_API_KEY` | Yes (if using OpenAI) | — | OpenAI API key |
-| `GOOGLE_API_KEY` | Yes (if using Gemini) | — | Gemini API key |
-| `CHAT_PROVIDER` | No | `"anthropic"` | LLM provider: `"anthropic"`, `"openai"`, or `"gemini"` |
-| `CONVERSATIONS_DIR` | No | `"data/conversations"` | Directory for conversation persistence |
-| `TRACE_DIR` | No | — | When set, writes JSONL trace files for debugging |
-| `DEBUG_STREAMS` | No | — | When `"1"`, enables verbose streaming event logs |
-
-## Development
-
-```bash
-# Node.js v24 on this machine — use node directly instead of npx next
-node node_modules/next/dist/bin/next dev
-
-# Run tests
-npx vitest run
-```
-
-## Rebuilding the Widget Package
-
-After making changes to `packages/ucl-chat-widget/`:
-
-```bash
-cd packages/ucl-chat-widget
+# Build the widget
 npm run build
-cd ../..
-# The consuming app picks up changes automatically (linked via file: dependency)
+
+# Run the demo app
+cd demo
+cp .env.local.example .env.local  # add your API keys
+npx next dev --port 3001
+# Open http://localhost:3001
+```
+
+## Using the Widget in Your App
+
+```bash
+npm install github:benmaier/ucl-study-llm-chat-ui#path:packages/widget
+npm install github:benmaier/ucl-study-llm-chat-api
+```
+
+```tsx
+// app/page.tsx
+"use client";
+import { ChatWidget } from "ucl-chat-widget/client";
+
+export default function ChatPage() {
+  return (
+    <ChatWidget
+      config={{
+        sidebarTitle: "AI Assistant",
+        sidebarPanels: [
+          { title: "Instructions", content: <p>...</p>, defaultExpanded: true },
+        ],
+      }}
+    />
+  );
+}
+```
+
+```ts
+// app/api/chat/route.ts
+import { createChatHandler } from "ucl-chat-widget/server";
+export const { POST } = createChatHandler({
+  provider: "anthropic",
+  conversationsDir: "data/conversations",
+});
+```
+
+See [docs/installation.md](docs/installation.md) for the full setup guide.
+
+## Documentation
+
+- [Installation](docs/installation.md) - Prerequisites, setup, environment variables
+- [Architecture](docs/architecture.md) - Workspace layout, runtime flow, SSE protocol, storage
+- [Configuration](docs/configuration.md) - Widget config, route config, CSS variables, ConversationBackend
+- [API Reference](docs/api-reference.md) - All exported types, components, and handler factories
+- [Demo App](docs/demo-app.md) - Running the demo, E2E tests, route wrappers
+- [Known Issues](docs/known-issues.md) - Provider-specific behavior, CSS quirks, Node.js compatibility
+
+## Testing
+
+```bash
+# Widget unit tests (45 tests, no API keys needed)
+npm test
+
+# E2E tests (needs API keys in demo/.env.local)
+cd demo
+CHAT_PROVIDER=anthropic npx playwright test
+CHAT_PROVIDER=openai npx playwright test
+CHAT_PROVIDER=gemini npx playwright test
 ```
 
 ## Related Repositories
 
-- [`ucl-study-llm-chat-api`](https://github.com/benmaier/ucl-study-llm-chat-api) — TypeScript SDK for Claude/OpenAI/Gemini with code execution, file handling, and streaming
+- [ucl-study-llm-chat-api](https://github.com/benmaier/ucl-study-llm-chat-api) - TypeScript SDK for Claude/OpenAI/Gemini with code execution, file handling, and streaming
