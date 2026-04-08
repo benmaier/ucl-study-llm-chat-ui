@@ -59,6 +59,8 @@ export interface ChatRouteConfig {
   backend?: ConversationBackend;
   /** LLM provider — required when using the default filesystem backend */
   provider?: "anthropic" | "openai" | "gemini";
+  /** Model override (e.g. "claude-haiku-4-5-20251001", "gpt-4o"). Falls back to SDK default per provider. */
+  model?: string;
   /** Directory for conversation persistence — required when using the default filesystem backend */
   conversationsDir?: string;
   /** Additional writers (e.g. DatabaseWriter) injected alongside the default FileWriter */

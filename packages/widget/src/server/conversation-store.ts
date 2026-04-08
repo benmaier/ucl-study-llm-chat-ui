@@ -100,21 +100,25 @@ export class FileConversationBackend implements ConversationBackend {
 
     let conversation: Conversation;
 
-    const apiKey = this.config.apiKey;
+    const { apiKey, model } = this.config;
+    const extraOpts = {
+      ...(apiKey ? { apiKey } : {}),
+      ...(model ? { model } : {}),
+    };
 
     if (existsSync(filePath)) {
       try {
         conversation = await Conversation.loadFromFile(filePath, {
           provider: this.provider,
           writers,
-          ...(apiKey ? { apiKey } : {}),
+          ...extraOpts,
         } as any);
       } catch {
         conversation = new Conversation({
           provider: this.provider,
           id: threadId,
           writers,
-          ...(apiKey ? { apiKey } : {}),
+          ...extraOpts,
         } as any);
       }
     } else {
@@ -122,7 +126,7 @@ export class FileConversationBackend implements ConversationBackend {
         provider: this.provider,
         id: threadId,
         writers,
-        ...(apiKey ? { apiKey } : {}),
+        ...extraOpts,
       } as any);
     }
 

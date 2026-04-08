@@ -75,21 +75,34 @@ export function createChatHandler(config: ChatRouteConfig) {
 
     const conversation = await backend.getOrCreateConversation(threadId);
 
+    const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"]);
     const fileParts = extractFiles(lastUserMsg);
     const fileIds: string[] = [];
+    const images: Array<{ base64Data: string; mediaType: string }> = [];
+    const nonImageParts: typeof fileParts = [];
+
     for (const file of fileParts) {
-      const buffer = dataUrlToBuffer(file.url);
-      const uploaded = await conversation.uploadFileFromBuffer(
-        buffer,
-        file.filename,
-        file.mediaType,
-      );
-      fileIds.push(uploaded.file_id);
+      if (IMAGE_MIMES.has(file.mediaType)) {
+        // Images: send inline as visual content, don't upload
+        const buffer = dataUrlToBuffer(file.url);
+        images.push({ base64Data: buffer.toString("base64"), mediaType: file.mediaType });
+      } else {
+        // Non-images: upload to provider's file storage for code execution
+        const buffer = dataUrlToBuffer(file.url);
+        const uploaded = await conversation.uploadFileFromBuffer(
+          buffer,
+          file.filename,
+          file.mediaType,
+        );
+        fileIds.push(uploaded.file_id);
+        nonImageParts.push(file);
+      }
     }
 
+
     let finalMessage = messageText;
-    if (fileParts.length > 0) {
-      const fileList = fileParts
+    if (nonImageParts.length > 0) {
+      const fileList = nonImageParts
         .map((f, i) => `  input_file_${i}: "${f.filename}"`)
         .join("\n");
       finalMessage = `[Attached files:\n${fileList}]\n\n${messageText}`;
@@ -104,10 +117,12 @@ export function createChatHandler(config: ChatRouteConfig) {
 
     const stream = createSseStream(conversation, finalMessage, {
       fileIds: fileIds.length > 0 ? fileIds : undefined,
+      images: images.length > 0 ? images : undefined,
       artifactsDir: backend.artifactsDirForThread(threadId),
       threadId,
       traceFile,
       apiBasePath: config.apiBasePath,
+      deferToolOutput: config.provider === "openai",
     });
 
     return new Response(stream, {

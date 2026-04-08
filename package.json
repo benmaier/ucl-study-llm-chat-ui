@@ -12,5 +12,8 @@
     "test:e2e:headed": "npm run test:e2e:headed -w demo",
     "dev:widget": "npm run dev -w packages/widget",
     "dev:app": "npm run dev -w demo"
+  },
+  "dependencies": {
+    "ucl-study-llm-chat-api": "file:../ucl-study-llm-chat-api/ucl-study-llm-chat-api-1.0.6.tgz"
   }
 }

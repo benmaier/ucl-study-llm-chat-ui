@@ -18,6 +18,12 @@ const testOptions = {
   threadId: "test-123",
 };
 
+/** Options for tests that simulate OpenAI's deferred output pattern. */
+const openaiOptions = {
+  ...testOptions,
+  deferToolOutput: true,
+};
+
 /** Creates a mock Conversation whose send() invokes the callback with the given events. */
 function mockConversation(events: StreamEvent[], result?: Record<string, unknown>) {
   return {
@@ -200,7 +206,7 @@ describe("createSseStream", () => {
       { type: "text", text: "Both computations complete." },
     ];
     const conv = mockConversation(events);
-    const stream = createSseStream(conv, "compute", testOptions);
+    const stream = createSseStream(conv, "compute", openaiOptions);
     const sse = await collectSseEvents(stream);
 
     // Both tools have input-start with correct IDs
@@ -289,7 +295,7 @@ describe("createSseStream", () => {
       { type: "text", text: "All done." },
     ];
     const conv = mockConversation(events);
-    const stream = createSseStream(conv, "compute", testOptions);
+    const stream = createSseStream(conv, "compute", openaiOptions);
     const sse = await collectSseEvents(stream);
 
     const toolStarts = sse.filter((e) => e.type === "tool-input-start");
@@ -326,7 +332,7 @@ describe("createSseStream", () => {
       { type: "code_output", output: "1" },
     ];
     const conv = mockConversation(events);
-    const stream = createSseStream(conv, "compute", testOptions);
+    const stream = createSseStream(conv, "compute", openaiOptions);
     const sse = await collectSseEvents(stream);
 
     const toolOutputs = sse.filter((e) => e.type === "tool-output-available");

@@ -49,6 +49,8 @@ function parseToolOutput(raw: string): unknown {
 
 export interface SseStreamOptions {
   fileIds?: string[];
+  /** Images to embed as visual content in the LLM prompt. */
+  images?: Array<{ base64Data: string; mediaType: string }>;
   /** Directory to save generated artifacts (plots, text files). */
   artifactsDir: string;
   /** Thread ID for constructing artifact URLs. */
@@ -57,6 +59,10 @@ export interface SseStreamOptions {
   traceFile?: string;
   /** API route base path for constructing artifact URLs (default: "/api"). */
   apiBasePath?: string;
+  /** When true, defer tool output emission until code_output arrives post-stream.
+   *  Set to true for OpenAI where outputs arrive after the stream ends.
+   *  Default: false (Claude/Gemini send output between tool_end and next event). */
+  deferToolOutput?: boolean;
 }
 
 /**
@@ -68,7 +74,7 @@ export function createSseStream(
   message: string,
   options: SseStreamOptions,
 ): ReadableStream {
-  const { fileIds, artifactsDir, threadId, traceFile, apiBasePath } = options;
+  const { fileIds, images, artifactsDir, threadId, traceFile, apiBasePath, deferToolOutput } = options;
   const baseUrl = apiBasePath ?? "/api";
 
   // Ensure artifacts directory exists
@@ -92,13 +98,16 @@ export function createSseStream(
       let accumulatedOutput = "";
       let toolInputFinalized = false;
       let currentToolName = "";
+      let currentSdkToolId: string | undefined; // SDK-side tool ID (Claude)
       let pendingToolEnd = false; // tool_end fired but output not yet emitted
       let currentlyInTool = false; // between tool_start and tool_end
       let streamedTextLength = 0; // total chars streamed via text events
       let streamClosed = false;
       /** Tools that were flushed (counter advanced) before their output arrived.
        *  Each entry holds the toolCallId to emit output-available for later. */
-      const deferredOutputTools: Array<{ toolCallId: string }> = [];
+      const deferredOutputTools: Array<{ toolCallId: string; sdkToolId?: string }> = [];
+      /** Maps SDK tool IDs (from provider) to SSE tool IDs (tool-0, tool-1, ...). */
+      const sdkToSseToolId = new Map<string, string>();
 
       /** Safe enqueue — guards against closed controller */
       function emit(data: Record<string, unknown>) {
@@ -134,10 +143,17 @@ export function createSseStream(
         }
       }
 
-      /** Flush a pending tool.  If real output is available, emit
-       *  tool-output-available immediately.  Otherwise defer — the
-       *  output-available event will be emitted when the matching
-       *  code_output arrives (typically post-stream for OpenAI). */
+      /** Flush a pending tool.
+       *
+       *  If real output is available, emit tool-output-available immediately.
+       *
+       *  If no output:
+       *  - deferToolOutput=true (OpenAI): push to deferred queue — the
+       *    code_output will arrive post-stream and be matched FIFO.
+       *  - deferToolOutput=false (Claude/Gemini): emit "Execution complete"
+       *    immediately. Claude sends code_output between tool_end and
+       *    the next event, so tools without output (e.g. text_editor)
+       *    genuinely have no output to wait for. */
       function flushPendingTool() {
         if (!pendingToolEnd) return;
         if (accumulatedOutput) {
@@ -146,9 +162,14 @@ export function createSseStream(
             toolCallId: currentToolCallId(),
             output: parseToolOutput(accumulatedOutput),
           });
-        } else {
-          // No output yet — defer emission until code_output arrives
+        } else if (deferToolOutput) {
           deferredOutputTools.push({ toolCallId: currentToolCallId() });
+        } else {
+          emit({
+            type: "tool-output-available",
+            toolCallId: currentToolCallId(),
+            output: "Execution complete",
+          });
         }
         toolCallCounter++;
         accumulatedInput = "";
@@ -162,6 +183,7 @@ export function createSseStream(
       try {
         const sendOptions: Record<string, unknown> = {};
         if (fileIds?.length) sendOptions.fileIds = fileIds;
+        if (images?.length) sendOptions.images = images;
         if (traceFile) sendOptions.traceFile = traceFile;
         const hasSendOptions = Object.keys(sendOptions).length > 0;
         const result = await conversation.send(message, (event: StreamEvent) => {
@@ -204,6 +226,11 @@ export function createSseStream(
               closeTextBlock();
               currentlyInTool = true;
               currentToolName = event.toolName ?? "code_execution";
+              currentSdkToolId = event.toolCallId;
+              // Track SDK tool ID → SSE tool ID mapping
+              if (event.toolCallId) {
+                sdkToSseToolId.set(event.toolCallId, currentToolCallId());
+              }
               emit({
                 type: "tool-input-start",
                 toolCallId: currentToolCallId(),
@@ -257,20 +284,32 @@ export function createSseStream(
               const outputText = event.output ?? "";
               if (currentlyInTool) {
                 // Output for the current tool (between tool_start and tool_end).
-                // Accumulate so tool_end finds it and flushes immediately.
                 accumulatedOutput += outputText;
+              } else if (event.toolCallId && sdkToSseToolId.has(event.toolCallId)) {
+                // Claude pattern: code_output has a toolCallId linking it to
+                // its originating tool. Emit directly to the correct tool,
+                // bypassing the FIFO queue which can't handle out-of-order results.
+                const sseToolId = sdkToSseToolId.get(event.toolCallId)!;
+                // Remove from deferred queue if it was deferred
+                const deferredIdx = deferredOutputTools.findIndex(d => d.toolCallId === sseToolId);
+                if (deferredIdx !== -1) {
+                  deferredOutputTools.splice(deferredIdx, 1);
+                }
+                emit({
+                  type: "tool-output-available",
+                  toolCallId: sseToolId,
+                  output: outputText ? parseToolOutput(outputText) : "Execution complete",
+                });
               } else if (deferredOutputTools.length > 0) {
-                // Output for a previously-flushed tool whose output-available
-                // was deferred (OpenAI pattern: code_output arrives post-stream).
+                // OpenAI pattern: no toolCallId, use FIFO queue.
                 const deferred = deferredOutputTools.shift()!;
                 emit({
                   type: "tool-output-available",
                   toolCallId: deferred.toolCallId,
                   output: outputText ? parseToolOutput(outputText) : "Execution complete",
                 });
-              } else {
-                // Output after tool_end but before next event flushes it
-                // (Claude/Gemini pattern: code_output after tool_end).
+              } else if (pendingToolEnd) {
+                // Output after tool_end but before next event flushes it.
                 accumulatedOutput += outputText;
               }
               break;
