@@ -295,6 +295,15 @@ export function createSseStream(
                 if (deferredIdx !== -1) {
                   deferredOutputTools.splice(deferredIdx, 1);
                 }
+                // If this output is for the tool that just ended (pendingToolEnd),
+                // clear pendingToolEnd so flushPendingTool doesn't emit a duplicate
+                if (pendingToolEnd && sseToolId === currentToolCallId()) {
+                  pendingToolEnd = false;
+                  toolCallCounter++;
+                  accumulatedInput = "";
+                  accumulatedOutput = "";
+                  toolInputFinalized = false;
+                }
                 emit({
                   type: "tool-output-available",
                   toolCallId: sseToolId,

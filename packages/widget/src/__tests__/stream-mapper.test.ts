@@ -495,4 +495,118 @@ describe("createSseStream", () => {
     expect(sse[firstTextStart]).toMatchObject({ id: "text-0" });
     expect(sse[secondTextStart]).toMatchObject({ id: "text-1" });
   });
+
+  // -----------------------------------------------------------------------
+  // Claude toolCallId: code_output after tool_end with ID matching
+  // -----------------------------------------------------------------------
+
+  it("Claude pattern: code_output with toolCallId after tool_end gets matched correctly", async () => {
+    // Claude sends: tool_start(id) → tool_end → code_output(id) → next tool_start
+    const events: StreamEvent[] = [
+      { type: "tool_start", toolName: "bash_code_execution", toolCallId: "srv_001" },
+      { type: "tool_input", text: '{"command":"ls"}' },
+      { type: "tool_end", toolName: "bash_code_execution" },
+      { type: "code_output", output: "file1.txt\nfile2.txt", toolCallId: "srv_001" },
+      { type: "text", text: "Here are the files." },
+    ];
+    const conv = mockConversation(events);
+    const stream = createSseStream(conv, "list files", testOptions);
+    const sse = await collectSseEvents(stream);
+
+    const toolOutputs = sse.filter((e) => e.type === "tool-output-available");
+    // Should have exactly ONE output (not a duplicate "Execution complete")
+    expect(toolOutputs).toHaveLength(1);
+    expect(toolOutputs[0]).toMatchObject({
+      toolCallId: "tool-0",
+      output: "file1.txt\nfile2.txt",
+    });
+    // Should NOT have "Execution complete"
+    expect(toolOutputs[0].output).not.toBe("Execution complete");
+  });
+
+  it("Claude pattern: multiple tools with toolCallId, outputs after each tool_end", async () => {
+    const events: StreamEvent[] = [
+      { type: "tool_start", toolName: "bash_code_execution", toolCallId: "srv_001" },
+      { type: "tool_input", text: '{"command":"echo hello"}' },
+      { type: "tool_end", toolName: "bash_code_execution" },
+      { type: "code_output", output: "hello", toolCallId: "srv_001" },
+      { type: "tool_start", toolName: "bash_code_execution", toolCallId: "srv_002" },
+      { type: "tool_input", text: '{"command":"echo world"}' },
+      { type: "tool_end", toolName: "bash_code_execution" },
+      { type: "code_output", output: "world", toolCallId: "srv_002" },
+      { type: "text", text: "Done." },
+    ];
+    const conv = mockConversation(events);
+    const stream = createSseStream(conv, "run", testOptions);
+    const sse = await collectSseEvents(stream);
+
+    const toolOutputs = sse.filter((e) => e.type === "tool-output-available");
+    expect(toolOutputs).toHaveLength(2);
+    expect(toolOutputs[0]).toMatchObject({ toolCallId: "tool-0", output: "hello" });
+    expect(toolOutputs[1]).toMatchObject({ toolCallId: "tool-1", output: "world" });
+    // No "Execution complete" placeholders
+    for (const out of toolOutputs) {
+      expect(out.output).not.toBe("Execution complete");
+    }
+  });
+
+  it("Claude pattern: text_editor (no output) + bash (with output) — no cross-contamination", async () => {
+    // text_editor has no code_output, bash has code_output with toolCallId
+    const events: StreamEvent[] = [
+      { type: "tool_start", toolName: "text_editor_code_execution", toolCallId: "srv_te1" },
+      { type: "tool_input", text: '{"command":"create","path":"/tmp/test.py"}' },
+      { type: "tool_end", toolName: "text_editor_code_execution" },
+      // No code_output for text_editor — it just creates a file
+      { type: "tool_start", toolName: "bash_code_execution", toolCallId: "srv_bash1" },
+      { type: "tool_input", text: '{"command":"python /tmp/test.py"}' },
+      { type: "tool_end", toolName: "bash_code_execution" },
+      { type: "code_output", output: "42", toolCallId: "srv_bash1" },
+      { type: "text", text: "The result is 42." },
+    ];
+    const conv = mockConversation(events);
+    const stream = createSseStream(conv, "run", testOptions);
+    const sse = await collectSseEvents(stream);
+
+    const toolOutputs = sse.filter((e) => e.type === "tool-output-available");
+    expect(toolOutputs).toHaveLength(2);
+
+    // text_editor gets "Execution complete" (no output)
+    expect(toolOutputs[0]).toMatchObject({
+      toolCallId: "tool-0",
+      output: "Execution complete",
+    });
+
+    // bash gets the real output "42" (not cross-contaminated)
+    expect(toolOutputs[1]).toMatchObject({
+      toolCallId: "tool-1",
+      output: 42,
+    });
+  });
+
+  it("Claude pattern: code_output with toolCallId does not produce duplicate output", async () => {
+    // Regression test: previously, code_output emitted tool-output-available
+    // but left pendingToolEnd=true, causing flushPendingTool to emit a second
+    // "Execution complete" that overwrote the real result in the UI
+    const events: StreamEvent[] = [
+      { type: "tool_start", toolName: "bash_code_execution", toolCallId: "srv_001" },
+      { type: "tool_input", text: '{"command":"ls"}' },
+      { type: "tool_end", toolName: "bash_code_execution" },
+      { type: "code_output", output: "result.txt", toolCallId: "srv_001" },
+      // Next tool_start triggers flushPendingTool — should NOT emit duplicate
+      { type: "tool_start", toolName: "bash_code_execution", toolCallId: "srv_002" },
+      { type: "tool_input", text: '{"command":"cat result.txt"}' },
+      { type: "tool_end", toolName: "bash_code_execution" },
+      { type: "code_output", output: "file contents", toolCallId: "srv_002" },
+      { type: "text", text: "Done." },
+    ];
+    const conv = mockConversation(events);
+    const stream = createSseStream(conv, "run", testOptions);
+    const sse = await collectSseEvents(stream);
+
+    const toolOutputs = sse.filter((e) => e.type === "tool-output-available");
+    // Exactly 2 outputs, one per tool — no duplicates
+    expect(toolOutputs).toHaveLength(2);
+    expect(toolOutputs[0]).toMatchObject({ toolCallId: "tool-0", output: "result.txt" });
+    expect(toolOutputs[1]).toMatchObject({ toolCallId: "tool-1", output: "file contents" });
+  });
 });
