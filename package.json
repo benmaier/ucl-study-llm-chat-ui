@@ -14,6 +14,6 @@
     "dev:app": "npm run dev -w demo"
   },
   "dependencies": {
-    "ucl-study-llm-chat-api": "file:../ucl-study-llm-chat-api/ucl-study-llm-chat-api-1.0.6.tgz"
+    "ucl-study-llm-chat-api": "file:../ucl-study-llm-chat-api/ucl-study-llm-chat-api-1.0.8.tgz"
   }
 }
