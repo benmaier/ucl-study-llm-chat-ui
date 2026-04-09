@@ -10,19 +10,26 @@
 
 ## Installing the Widget
 
-### From GitHub
+### From GitHub release tarball (recommended)
+
+Each release includes a pre-built tarball attached as a GitHub release asset:
 
 ```bash
-npm install github:benmaier/ucl-study-llm-chat-ui#path:packages/widget
+# Latest release (v0.3.0)
+npm install https://github.com/benmaier/ucl-study-llm-chat-ui/releases/download/v0.3.0/ucl-chat-widget-0.3.0.tgz
 ```
 
-### From a specific version
+Check [Releases](https://github.com/benmaier/ucl-study-llm-chat-ui/releases) for all available versions.
+
+### From a local tarball
+
+If you have the tarball file:
 
 ```bash
-npm install github:benmaier/ucl-study-llm-chat-ui#semver:v0.2.5
+npm install ./ucl-chat-widget-0.3.0.tgz
 ```
 
-### As a workspace (monorepo development)
+### For development (monorepo)
 
 ```bash
 git clone git@github.com:benmaier/ucl-study-llm-chat-ui.git

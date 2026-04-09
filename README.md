@@ -43,10 +43,13 @@ npx next dev --port 3001
 # Open http://localhost:3001
 ```
 
-## Using the Widget in Your App
+## Installing the Widget in Your App
 
 ```bash
-npm install github:benmaier/ucl-study-llm-chat-ui#path:packages/widget
+# Install from GitHub release tarball (recommended)
+npm install https://github.com/benmaier/ucl-study-llm-chat-ui/releases/download/v0.3.0/ucl-chat-widget-0.3.0.tgz
+
+# Install the SDK peer dependency
 npm install github:benmaier/ucl-study-llm-chat-api
 ```
 
@@ -102,6 +105,31 @@ CHAT_PROVIDER=openai npx playwright test
 CHAT_PROVIDER=gemini npx playwright test
 ```
 
+## Releasing
+
+```bash
+# Release widget only (bumps version, builds, tests, creates tarball, tags, pushes)
+make release VERSION=0.3.1
+
+# Release SDK only
+make release-sdk VERSION=1.0.9
+
+# Release both
+make release-both WIDGET_VERSION=0.3.1 SDK_VERSION=1.0.9
+
+# Just create a tarball without releasing
+make tarball
+```
+
+The tarball is automatically attached to the GitHub release. Consumers install with:
+```bash
+npm install https://github.com/benmaier/ucl-study-llm-chat-ui/releases/download/vX.Y.Z/ucl-chat-widget-X.Y.Z.tgz
+```
+
 ## Related Repositories
 
 - [ucl-study-llm-chat-api](https://github.com/benmaier/ucl-study-llm-chat-api) - TypeScript SDK for Claude/OpenAI/Gemini with code execution, file handling, and streaming
+
+## License
+
+[Apache 2.0](LICENSE)
