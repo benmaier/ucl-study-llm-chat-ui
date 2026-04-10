@@ -246,4 +246,70 @@ test.describe(`Chat UI [${provider}]`, () => {
     const threadsAfter = await page.locator("[data-slot='thread-list-item']").count();
     expect(threadsAfter).toBeGreaterThanOrEqual(threadsBefore);
   });
+
+  test("tool call with result survives page reload", async ({ page }) => {
+    await sendMessage(
+      page,
+      "Execute this Python code: print(2 + 2). Show me the result.",
+    );
+
+    const toolCard = page.locator(".aui-tool-fallback-root").first();
+    await toolCard.waitFor({ state: "visible", timeout: 60_000 });
+    await waitForStreamingDone(page);
+
+    // Verify tool has result before reload
+    const trigger = toolCard.locator(".aui-tool-fallback-trigger");
+    await expect(trigger).toContainText("Used tool");
+    await trigger.click();
+    await page.waitForTimeout(300);
+    const resultBefore = toolCard.locator(".aui-tool-fallback-result-content");
+    await expect(resultBefore).toBeVisible();
+    const resultTextBefore = await resultBefore.textContent();
+    expect(resultTextBefore).toBeTruthy();
+
+    // Also check code input is visible
+    const argsBefore = toolCard.locator(".aui-tool-fallback-args");
+    await expect(argsBefore).toBeVisible();
+    const argsTextBefore = await argsBefore.textContent();
+    expect(argsTextBefore).toBeTruthy();
+    expect(argsTextBefore!.length).toBeGreaterThan(3); // more than just "run"
+
+    // Reload the page
+    await page.reload();
+    await waitForChatReady(page);
+
+    // Click the conversation in the thread list to reload it
+    await page.waitForTimeout(2000); // wait for thread list to load
+    const threadItems = page.locator("[data-active='true']");
+    if (await threadItems.count() === 0) {
+      // Thread might not be auto-selected — click first thread
+      const firstThread = page.locator(".aui-thread-list-item, [data-slot='thread-list-item']").first();
+      if (await firstThread.count() > 0) {
+        await firstThread.click();
+        await page.waitForTimeout(1000);
+      }
+    }
+
+    // Verify tool card still exists after reload
+    const toolCardAfter = page.locator(".aui-tool-fallback-root").first();
+    await toolCardAfter.waitFor({ state: "visible", timeout: 15_000 });
+
+    // Expand it
+    const triggerAfter = toolCardAfter.locator(".aui-tool-fallback-trigger");
+    await triggerAfter.click();
+    await page.waitForTimeout(300);
+
+    // Code input should still be visible with meaningful content
+    const argsAfter = toolCardAfter.locator(".aui-tool-fallback-args");
+    await expect(argsAfter).toBeVisible();
+    const argsTextAfter = await argsAfter.textContent();
+    expect(argsTextAfter).toBeTruthy();
+    expect(argsTextAfter!.length).toBeGreaterThan(3);
+
+    // Result should still be visible
+    const resultAfter = toolCardAfter.locator(".aui-tool-fallback-result-content");
+    await expect(resultAfter).toBeVisible();
+    const resultTextAfter = await resultAfter.textContent();
+    expect(resultTextAfter).toBeTruthy();
+  });
 });
