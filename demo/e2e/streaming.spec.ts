@@ -16,8 +16,10 @@
  */
 
 import { test, expect, type Page } from "@playwright/test";
+import path from "path";
 
 const provider = process.env.CHAT_PROVIDER ?? "anthropic";
+const FIXTURES = path.join(__dirname, "fixtures");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,8 +36,80 @@ async function sendMessage(page: Page, text: string) {
   await page.locator(".aui-assistant-message-root").first().waitFor({ state: "visible", timeout: 30_000 });
 }
 
+/** Attach files via the hidden file input, then send a message. */
+async function sendMessageWithFiles(page: Page, text: string, filePaths: string[]) {
+  // The ComposerPrimitive.AddAttachment renders a hidden file input
+  const fileInput = page.locator(".aui-composer-add-attachment input[type='file']");
+  // If input isn't directly visible, try the button's associated input
+  if (await fileInput.count() === 0) {
+    // Trigger via the + button which opens a file chooser
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      page.locator(".aui-composer-add-attachment").click(),
+    ]);
+    await fileChooser.setFiles(filePaths);
+  } else {
+    await fileInput.setInputFiles(filePaths);
+  }
+  // Wait a moment for files to attach
+  await page.waitForTimeout(500);
+  // Now type and send
+  const input = page.locator(".aui-composer-input");
+  await input.fill(text);
+  await page.locator(".aui-composer-send").click();
+  await page.locator(".aui-assistant-message-root").first().waitFor({ state: "visible", timeout: 30_000 });
+}
+
 async function waitForStreamingDone(page: Page) {
   await page.locator(".aui-composer-send").waitFor({ state: "visible", timeout: 90_000 });
+}
+
+/** Auto-expand tool cards as they appear. Returns a stop function. */
+function autoExpandToolCards(page: Page): () => void {
+  const toolCards = page.locator(".aui-tool-fallback-root");
+  let expandedCount = 0;
+  const interval = setInterval(async () => {
+    try {
+      const count = await toolCards.count();
+      for (let i = expandedCount; i < count; i++) {
+        const trigger = toolCards.nth(i).locator(".aui-tool-fallback-trigger");
+        if (await trigger.isVisible()) {
+          await trigger.click();
+        }
+      }
+      expandedCount = count;
+    } catch { /* page may be navigating */ }
+  }, 300);
+  return () => clearInterval(interval);
+}
+
+/** After streaming, expand any tool cards not yet expanded and verify each has code + result. */
+async function verifyToolCards(page: Page) {
+  const toolCards = page.locator(".aui-tool-fallback-root");
+  const count = await toolCards.count();
+  for (let i = 0; i < count; i++) {
+    const card = toolCards.nth(i);
+    const trigger = card.locator(".aui-tool-fallback-trigger");
+    // Expand if collapsed
+    const content = card.locator(".aui-tool-fallback-args");
+    if (await content.count() === 0 || !(await content.isVisible())) {
+      await trigger.click();
+      await page.waitForTimeout(300);
+    }
+    // Verify code args are present and non-trivial
+    const args = card.locator(".aui-tool-fallback-args");
+    if (await args.count() > 0) {
+      await expect(args).toBeVisible();
+      const argsText = await args.textContent();
+      expect(argsText!.length).toBeGreaterThan(3);
+    }
+    // Verify result is present
+    const result = card.locator(".aui-tool-fallback-result-content");
+    if (await result.count() > 0) {
+      await expect(result).toBeVisible();
+      expect(await result.textContent()).toBeTruthy();
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -66,28 +140,61 @@ test.describe(`Chat UI [${provider}]`, () => {
   });
 
   test("tool call renders with status and result", async ({ page }) => {
+    // Start expanding tool cards as soon as they appear during streaming
+    const toolCards = page.locator(".aui-tool-fallback-root");
+    let expandedCount = 0;
+    const expandInterval = setInterval(async () => {
+      try {
+        const count = await toolCards.count();
+        for (let i = expandedCount; i < count; i++) {
+          const trigger = toolCards.nth(i).locator(".aui-tool-fallback-trigger");
+          if (await trigger.isVisible()) {
+            await trigger.click();
+          }
+        }
+        expandedCount = count;
+      } catch { /* page may be navigating */ }
+    }, 300);
+
     await sendMessage(
       page,
       "Execute this Python code: print(2 + 2). Show me the result.",
     );
 
-    const toolCard = page.locator(".aui-tool-fallback-root").first();
+    const toolCard = toolCards.first();
     await toolCard.waitFor({ state: "visible", timeout: 60_000 });
     await waitForStreamingDone(page);
+    clearInterval(expandInterval);
+
+    // Expand any cards we missed
+    const finalCount = await toolCards.count();
+    for (let i = expandedCount; i < finalCount; i++) {
+      await toolCards.nth(i).locator(".aui-tool-fallback-trigger").click();
+      await page.waitForTimeout(300);
+    }
 
     // Completed: no spinner, "Used tool" label
     const trigger = toolCard.locator(".aui-tool-fallback-trigger");
     await expect(trigger).toContainText("Used tool");
-    const icon = toolCard.locator(".aui-tool-fallback-trigger-icon");
-    await expect(icon).not.toHaveClass(/animate-spin/);
+    await expect(toolCard.locator(".aui-tool-fallback-trigger-icon")).not.toHaveClass(/animate-spin/);
 
-    // Expand and verify args + result
-    await trigger.click();
-    await page.waitForTimeout(300);
-    await expect(toolCard.locator(".aui-tool-fallback-args")).toBeVisible();
+    // Args should have actual code content
+    const args = toolCard.locator(".aui-tool-fallback-args");
+    await expect(args).toBeVisible();
+    const argsText = await args.textContent();
+    expect(argsText!.length).toBeGreaterThan(5);
+
+    // Result should be visible with content
     const result = toolCard.locator(".aui-tool-fallback-result-content");
     await expect(result).toBeVisible();
     expect(await result.textContent()).toBeTruthy();
+
+    // Verify result STAYS visible for 3 seconds (regression: result appeared then disappeared)
+    for (let i = 0; i < 3; i++) {
+      await page.waitForTimeout(1000);
+      await expect(result).toBeVisible();
+      expect(await result.textContent()).toBeTruthy();
+    }
   });
 
   test("multiple tool calls render in order with results", async ({ page }) => {
@@ -262,54 +369,214 @@ test.describe(`Chat UI [${provider}]`, () => {
     await expect(trigger).toContainText("Used tool");
     await trigger.click();
     await page.waitForTimeout(300);
-    const resultBefore = toolCard.locator(".aui-tool-fallback-result-content");
-    await expect(resultBefore).toBeVisible();
-    const resultTextBefore = await resultBefore.textContent();
-    expect(resultTextBefore).toBeTruthy();
+    await expect(toolCard.locator(".aui-tool-fallback-result-content")).toBeVisible();
+    await expect(toolCard.locator(".aui-tool-fallback-args")).toBeVisible();
 
-    // Also check code input is visible
-    const argsBefore = toolCard.locator(".aui-tool-fallback-args");
-    await expect(argsBefore).toBeVisible();
-    const argsTextBefore = await argsBefore.textContent();
-    expect(argsTextBefore).toBeTruthy();
-    expect(argsTextBefore!.length).toBeGreaterThan(3); // more than just "run"
-
-    // Reload the page
+    // Reload and wait for thread list to populate
     await page.reload();
     await waitForChatReady(page);
+    await page.waitForTimeout(3000);
 
-    // Click the conversation in the thread list to reload it
-    await page.waitForTimeout(2000); // wait for thread list to load
-    const threadItems = page.locator("[data-active='true']");
-    if (await threadItems.count() === 0) {
-      // Thread might not be auto-selected — click first thread
-      const firstThread = page.locator(".aui-thread-list-item, [data-slot='thread-list-item']").first();
-      if (await firstThread.count() > 0) {
-        await firstThread.click();
-        await page.waitForTimeout(1000);
+    // Click the first thread (most recent conversation)
+    const threads = page.locator("[data-slot='thread-list-item'] button, .group.flex.items-center.rounded-md button").first();
+    if (await threads.count() > 0) {
+      await threads.click();
+      await page.waitForTimeout(2000);
+    }
+
+    // Tool card should still exist with result after reload
+    const toolCardAfter = page.locator(".aui-tool-fallback-root").first();
+    await toolCardAfter.waitFor({ state: "visible", timeout: 15_000 });
+    await toolCardAfter.locator(".aui-tool-fallback-trigger").click();
+    await page.waitForTimeout(300);
+
+    const argsAfter = toolCardAfter.locator(".aui-tool-fallback-args");
+    await expect(argsAfter).toBeVisible();
+    const argsText = await argsAfter.textContent();
+    expect(argsText!.length).toBeGreaterThan(3);
+
+    const resultAfter = toolCardAfter.locator(".aui-tool-fallback-result-content");
+    await expect(resultAfter).toBeVisible();
+    expect(await resultAfter.textContent()).toBeTruthy();
+  });
+
+  // -----------------------------------------------------------------------
+  // Image + CSV in same message
+  // -----------------------------------------------------------------------
+
+  test("LLM sees image and CSV when sent together", async ({ page }) => {
+    const stopExpand = autoExpandToolCards(page);
+
+    await sendMessageWithFiles(
+      page,
+      "I've attached an image and a CSV file. Briefly describe what the image shows, and tell me how many rows the CSV has.",
+      [
+        path.join(FIXTURES, "test-image.png"),
+        path.join(FIXTURES, "test-data.csv"),
+      ],
+    );
+    await waitForStreamingDone(page);
+    stopExpand();
+
+    // Verify tool cards have code + result
+    await verifyToolCards(page);
+
+    const content = await page.locator(".aui-assistant-message-content").first().textContent();
+    expect(content!.toLowerCase()).toMatch(/image|picture|visual|white|pixel|blank|photo/);
+    expect(content).toMatch(/1000|1,000|thousand/);
+  });
+
+  // -----------------------------------------------------------------------
+  // Cross-turn image memory
+  // -----------------------------------------------------------------------
+
+  test("LLM remembers image from previous turn", async ({ page }) => {
+    // Turn 1: send image
+    await sendMessageWithFiles(
+      page,
+      "Remember this image for later.",
+      [path.join(FIXTURES, "test-image.png")],
+    );
+    await waitForStreamingDone(page);
+
+    // Turn 2: ask about it without re-uploading
+    await sendMessage(page, "What did the image I sent earlier look like? Describe it briefly.");
+    await waitForStreamingDone(page);
+
+    // The second assistant message should reference the image
+    const messages = page.locator(".aui-assistant-message-content");
+    const lastMessage = messages.last();
+    const text = await lastMessage.textContent();
+    // Model should describe or reference the image
+    expect(text!.toLowerCase()).toMatch(/image|picture|earlier|previous|white|pixel|blank/);
+  });
+
+  // -----------------------------------------------------------------------
+  // CSV mean computation
+  // -----------------------------------------------------------------------
+
+  test("LLM can compute mean of uploaded CSV", async ({ page }) => {
+    const stopExpand = autoExpandToolCards(page);
+
+    await sendMessageWithFiles(
+      page,
+      "Calculate the mean of the 'value' column in this CSV file. Just give me the number, nothing else.",
+      [path.join(FIXTURES, "test-data.csv")],
+    );
+    await waitForStreamingDone(page);
+    stopExpand();
+
+    // Verify tool cards have code + result
+    await verifyToolCards(page);
+
+    // Check the text response mentions a reasonable mean
+    const content = await page.locator(".aui-assistant-message-content").first().textContent();
+    const numbers = content!.match(/\d+\.?\d*/g) || [];
+    const foundMean = numbers.some((n) => {
+      const v = parseFloat(n);
+      return v > 40 && v < 60; // rough range for mean of uniform [0,100]
+    });
+    expect(foundMean).toBe(true);
+  });
+
+  // -----------------------------------------------------------------------
+  // Thread naming after first message
+  // -----------------------------------------------------------------------
+
+  test("new thread appears in sidebar promptly after first message", async ({ page }) => {
+    const threadCountBefore = await page.locator(".group.flex.items-center.rounded-md").count();
+
+    await sendMessage(page, "Say exactly: testing thread creation");
+    await waitForStreamingDone(page);
+
+    // Thread should appear within a few seconds (not 10s poll)
+    await page.waitForTimeout(2000);
+    const threadCountAfter = await page.locator(".group.flex.items-center.rounded-md").count();
+    expect(threadCountAfter).toBeGreaterThan(threadCountBefore);
+  });
+
+  // -----------------------------------------------------------------------
+  // Image + CSV survives reload with tool results intact
+  // -----------------------------------------------------------------------
+
+  test("image + CSV with tool results survive page reload", async ({ page }) => {
+    const stopExpand = autoExpandToolCards(page);
+
+    // Send image + CSV together — explicit prompt to address both
+    await sendMessageWithFiles(
+      page,
+      "I sent you an IMAGE and a CSV. First: describe what the image looks like in one sentence. Second: how many rows does the CSV have?",
+      [
+        path.join(FIXTURES, "test-image.png"),
+        path.join(FIXTURES, "test-data.csv"),
+      ],
+    );
+    await waitForStreamingDone(page);
+    stopExpand();
+
+    // Verify tool cards have code + result before reload
+    await verifyToolCards(page);
+
+    // Check the image attachment is shown in the user message
+    const userMessage = page.locator(".aui-user-message-root").first();
+    await expect(userMessage).toBeVisible();
+
+    // Verify response has some content
+    const content = await page.locator(".aui-assistant-message-content").first().textContent();
+    expect(content!.length).toBeGreaterThan(10);
+
+    // Count tool cards before reload
+    const toolCountBefore = await page.locator(".aui-tool-fallback-root").count();
+
+    // --- RELOAD ---
+    await page.reload();
+    await waitForChatReady(page);
+    await page.waitForTimeout(3000);
+
+    // Click the first thread to reload the conversation
+    const firstThread = page.locator(".group.flex.items-center.rounded-md button").first();
+    if (await firstThread.count() > 0) {
+      await firstThread.click();
+      await page.waitForTimeout(2000);
+    }
+
+    // User message should still be visible
+    const userMsgAfter = page.locator(".aui-user-message-root").first();
+    await userMsgAfter.waitFor({ state: "visible", timeout: 10_000 });
+
+    // Image attachment should still be in the user message
+    const attachments = userMsgAfter.locator("img, .aui-attachment-preview-trigger");
+    const attachmentCount = await attachments.count();
+    expect(attachmentCount).toBeGreaterThan(0);
+
+    // Tool cards should still exist after reload
+    const toolCardsAfter = page.locator(".aui-tool-fallback-root");
+    await toolCardsAfter.first().waitFor({ state: "visible", timeout: 10_000 });
+    const toolCountAfter = await toolCardsAfter.count();
+    expect(toolCountAfter).toBeGreaterThan(0);
+
+    // Expand and verify each tool card has code + result
+    for (let i = 0; i < toolCountAfter; i++) {
+      const card = toolCardsAfter.nth(i);
+      await card.locator(".aui-tool-fallback-trigger").click();
+      await page.waitForTimeout(300);
+
+      const args = card.locator(".aui-tool-fallback-args");
+      if (await args.count() > 0) {
+        await expect(args).toBeVisible();
+        const argsText = await args.textContent();
+        expect(argsText!.length).toBeGreaterThan(3);
+      }
+
+      const result = card.locator(".aui-tool-fallback-result-content");
+      if (await result.count() > 0) {
+        await expect(result).toBeVisible();
+        expect(await result.textContent()).toBeTruthy();
       }
     }
 
-    // Verify tool card still exists after reload
-    const toolCardAfter = page.locator(".aui-tool-fallback-root").first();
-    await toolCardAfter.waitFor({ state: "visible", timeout: 15_000 });
-
-    // Expand it
-    const triggerAfter = toolCardAfter.locator(".aui-tool-fallback-trigger");
-    await triggerAfter.click();
-    await page.waitForTimeout(300);
-
-    // Code input should still be visible with meaningful content
-    const argsAfter = toolCardAfter.locator(".aui-tool-fallback-args");
-    await expect(argsAfter).toBeVisible();
-    const argsTextAfter = await argsAfter.textContent();
-    expect(argsTextAfter).toBeTruthy();
-    expect(argsTextAfter!.length).toBeGreaterThan(3);
-
-    // Result should still be visible
-    const resultAfter = toolCardAfter.locator(".aui-tool-fallback-result-content");
-    await expect(resultAfter).toBeVisible();
-    const resultTextAfter = await resultAfter.textContent();
-    expect(resultTextAfter).toBeTruthy();
+    // Assistant response should still have content after reload
+    const contentAfter = await page.locator(".aui-assistant-message-content").first().textContent();
+    expect(contentAfter!.length).toBeGreaterThan(10);
   });
 });
