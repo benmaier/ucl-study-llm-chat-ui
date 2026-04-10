@@ -200,8 +200,10 @@ const ThreadListSyncer: FC = () => {
       }
     };
 
+    // Poll every 10 seconds
     const interval = setInterval(refreshThreadList, 10_000);
 
+    // Refresh on tab activation
     const onVisibility = () => {
       if (document.visibilityState === "visible") {
         refreshThreadList();
@@ -209,7 +211,19 @@ const ThreadListSyncer: FC = () => {
     };
     document.addEventListener("visibilitychange", onVisibility);
 
+    // Refresh when a message completes (isRunning transitions to false)
+    let wasRunning = false;
+    const unsub = runtime.thread.subscribe(() => {
+      const isRunning = runtime.thread.getState().isRunning;
+      if (wasRunning && !isRunning) {
+        // Small delay to let the server persist the turn
+        setTimeout(refreshThreadList, 500);
+      }
+      wasRunning = isRunning;
+    });
+
     return () => {
+      unsub();
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibility);
     };
