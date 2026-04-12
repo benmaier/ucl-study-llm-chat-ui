@@ -262,11 +262,7 @@ function ToolFallbackResult({
 }: React.ComponentProps<"div"> & {
   result?: unknown;
 }) {
-  if (
-    result === undefined ||
-    result === "" ||
-    result === "Execution complete"
-  )
+  if (result === undefined || result === "")
     return null;
 
   return (

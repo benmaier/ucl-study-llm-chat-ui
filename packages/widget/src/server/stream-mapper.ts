@@ -451,80 +451,109 @@ export function createSseStream(
 
         closeTextBlock();
 
-        // Emit generated files as markdown images/links served via artifacts route
+        // Emit generated files — images as inline data URIs, others as artifact links
         if (result?.files?.length) {
-          let tmpDir: string | undefined;
-          try {
-            tmpDir = join(os.tmpdir(), `chat-files-${Date.now()}`);
-            mkdirSync(tmpDir, { recursive: true });
-            const paths = await conversation.downloadFiles(result.files, tmpDir);
+          const seenHashes = new Set<string>();
+          let hasInlineContent = false;
 
-            // Deduplicate by content hash and separate images from text files
-            const seenHashes = new Set<string>();
-            const imageFiles: Array<{ id: string; filename: string }> = [];
-            const textFiles: Array<{ id: string; filename: string }> = [];
-
-            for (let i = 0; i < paths.length; i++) {
-              const downloadedPath = paths[i];
-              const file = result.files[i];
-              const content = readFileSync(downloadedPath);
-
-              // Deduplicate by SHA-256 hash
-              const hash = crypto.createHash("sha256").update(content).digest("hex");
-              if (seenHashes.has(hash)) {
-                if (DEBUG_STREAMS) console.log(`[stream-mapper] Skipping duplicate: ${file.filename}`);
-                continue;
-              }
+          // First pass: emit files that already have base64Data (Gemini inline, or SDK-captured)
+          for (const file of result.files) {
+            if (file.base64Data) {
+              const hash = crypto.createHash("sha256").update(file.base64Data).digest("hex");
+              if (seenHashes.has(hash)) continue;
               seenHashes.add(hash);
 
-              // Determine actual file type from magic bytes
-              const isPng = content[0] === 0x89 && content[1] === 0x50 && content[2] === 0x4E && content[3] === 0x47;
-              const isJpeg = content[0] === 0xFF && content[1] === 0xD8;
-              const isImage = isPng || isJpeg;
+              const mimeType = file.mimeType || "image/png";
+              const isImage = mimeType.startsWith("image/");
+              const name = file.filename || `output.${isImage ? "png" : "txt"}`;
 
-              // Save with correct extension
-              const origExt = extname(file.filename || ".png") || ".png";
-              const ext = isImage ? origExt : ".txt";
-              const id = crypto.randomUUID() + ext;
-              copyFileSync(downloadedPath, join(artifactsDir, id));
+              if (!hasInlineContent) { openTextBlock(); hasInlineContent = true; }
 
-              const rawName = file.filename || `Generated file ${i + 1}`;
-              // Fix displayed name for text files (SDK labels them .png)
-              const filename = isImage ? rawName : rawName.replace(/\.\w+$/, ".txt");
               if (isImage) {
-                imageFiles.push({ id, filename });
+                emit({
+                  type: "text-delta",
+                  id: currentTextId(),
+                  delta: `\n\n![${name}](data:${mimeType};base64,${file.base64Data})\n\n`,
+                });
               } else {
-                textFiles.push({ id, filename });
+                // Non-image: save to artifacts dir and link
+                try {
+                  mkdirSync(artifactsDir, { recursive: true });
+                  const id = crypto.randomUUID() + ".txt";
+                  const buf = Buffer.from(file.base64Data, "base64");
+                  const { writeFileSync: wf } = await import("fs");
+                  wf(join(artifactsDir, id), buf);
+                  emit({
+                    type: "text-delta",
+                    id: currentTextId(),
+                    delta: `\n\n[${name}](${baseUrl}/threads/${threadId}/artifacts/${id})\n\n`,
+                  });
+                } catch (e) {
+                  console.error("[stream-mapper] Failed to save artifact:", e);
+                }
               }
-            }
-
-            if (imageFiles.length > 0 || textFiles.length > 0) {
-              openTextBlock();
-              for (const img of imageFiles) {
-                emit({
-                  type: "text-delta",
-                  id: currentTextId(),
-                  delta: `\n\n![${img.filename}](${baseUrl}/threads/${threadId}/artifacts/${img.id})\n\n`,
-                });
-              }
-              for (const tf of textFiles) {
-                emit({
-                  type: "text-delta",
-                  id: currentTextId(),
-                  delta: `\n\n[${tf.filename}](${baseUrl}/threads/${threadId}/artifacts/${tf.id})\n\n`,
-                });
-              }
-              closeTextBlock();
-            }
-          } catch (fileErr) {
-            console.error("[stream-mapper] Error downloading files:", fileErr);
-            const errMsg = fileErr instanceof Error ? fileErr.message : String(fileErr);
-            emit({ type: "error", errorText: `File download failed: ${errMsg}` });
-          } finally {
-            if (tmpDir) {
-              try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
             }
           }
+
+          // Second pass: download files that DON'T have base64Data (Anthropic/OpenAI container files)
+          const needsDownload = result.files.filter((f: any) => !f.base64Data && f.file_id);
+          if (needsDownload.length > 0) {
+            let tmpDir: string | undefined;
+            try {
+              tmpDir = join(os.tmpdir(), `chat-files-${Date.now()}`);
+              mkdirSync(tmpDir, { recursive: true });
+              const paths = await conversation.downloadFiles(needsDownload, tmpDir);
+
+              for (let i = 0; i < paths.length; i++) {
+                const downloadedPath = paths[i];
+                const file = needsDownload[i];
+                const content = readFileSync(downloadedPath);
+
+                const hash = crypto.createHash("sha256").update(content).digest("hex");
+                if (seenHashes.has(hash)) continue;
+                seenHashes.add(hash);
+
+                const isPng = content[0] === 0x89 && content[1] === 0x50 && content[2] === 0x4E && content[3] === 0x47;
+                const isJpeg = content[0] === 0xFF && content[1] === 0xD8;
+                const isImage = isPng || isJpeg;
+
+                if (!hasInlineContent) { openTextBlock(); hasInlineContent = true; }
+
+                if (isImage) {
+                  // Emit as data URI — works on serverless
+                  const b64 = content.toString("base64");
+                  const mimeType = isPng ? "image/png" : "image/jpeg";
+                  const name = file.filename || `image_${i}.png`;
+                  emit({
+                    type: "text-delta",
+                    id: currentTextId(),
+                    delta: `\n\n![${name}](data:${mimeType};base64,${b64})\n\n`,
+                  });
+                } else {
+                  // Non-image: save to artifacts and link
+                  const origExt = extname(file.filename || ".txt") || ".txt";
+                  const id = crypto.randomUUID() + origExt;
+                  copyFileSync(downloadedPath, join(artifactsDir, id));
+                  const name = file.filename || `file_${i}${origExt}`;
+                  emit({
+                    type: "text-delta",
+                    id: currentTextId(),
+                    delta: `\n\n[${name}](${baseUrl}/threads/${threadId}/artifacts/${id})\n\n`,
+                  });
+                }
+              }
+            } catch (fileErr) {
+              console.error("[stream-mapper] Error downloading files:", fileErr);
+              const errMsg = fileErr instanceof Error ? fileErr.message : String(fileErr);
+              emit({ type: "error", errorText: `File download failed: ${errMsg}` });
+            } finally {
+              if (tmpDir) {
+                try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+              }
+            }
+          }
+
+          if (hasInlineContent) closeTextBlock();
         }
 
         emit({ type: "finish" });
