@@ -78,6 +78,11 @@ export function createChatHandler(config: ChatRouteConfig) {
 
     const conversation = await backend.getOrCreateConversation(threadId);
 
+    // Notify backend of user message before send() — so the conversation is non-empty in the DB
+    if (backend.onUserMessageReceived) {
+      await backend.onUserMessageReceived(threadId, messageText);
+    }
+
     const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"]);
     const fileParts = extractFiles(lastUserMsg);
     const fileIds: string[] = [];

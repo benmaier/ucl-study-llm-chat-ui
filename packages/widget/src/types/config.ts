@@ -48,6 +48,8 @@ export interface ConversationBackend {
   getConversationData(threadId: string): Promise<{ turns: unknown[]; uploads?: unknown[] } | null>;
   /** Path to the artifacts directory for a given thread (for file storage). */
   artifactsDirForThread(threadId: string): string;
+  /** Called when a user message is received, before send(). Store it immediately so the conversation is non-empty. */
+  onUserMessageReceived?(threadId: string, message: string): Promise<void>;
 }
 
 /** Server-side configuration for route handler factories. */
