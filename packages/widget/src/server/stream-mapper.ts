@@ -476,21 +476,12 @@ export function createSseStream(
                   delta: `\n\n![${name}](data:${mimeType};base64,${file.base64Data})\n\n`,
                 });
               } else {
-                // Non-image: save to artifacts dir and link
-                try {
-                  mkdirSync(artifactsDir, { recursive: true });
-                  const id = crypto.randomUUID() + ".txt";
-                  const buf = Buffer.from(file.base64Data, "base64");
-                  const { writeFileSync: wf } = await import("fs");
-                  wf(join(artifactsDir, id), buf);
-                  emit({
-                    type: "text-delta",
-                    id: currentTextId(),
-                    delta: `\n\n[${name}](${baseUrl}/threads/${threadId}/artifacts/${id})\n\n`,
-                  });
-                } catch (e) {
-                  console.error("[stream-mapper] Failed to save artifact:", e);
-                }
+                // Non-image: data URI download link
+                emit({
+                  type: "text-delta",
+                  id: currentTextId(),
+                  delta: `\n\n[${name}](data:${mimeType};base64,${file.base64Data})\n\n`,
+                });
               }
             }
           }
@@ -530,15 +521,14 @@ export function createSseStream(
                     delta: `\n\n![${name}](data:${mimeType};base64,${b64})\n\n`,
                   });
                 } else {
-                  // Non-image: save to artifacts and link
-                  const origExt = extname(file.filename || ".txt") || ".txt";
-                  const id = crypto.randomUUID() + origExt;
-                  copyFileSync(downloadedPath, join(artifactsDir, id));
-                  const name = file.filename || `file_${i}${origExt}`;
+                  // Non-image: data URI download link
+                  const b64 = content.toString("base64");
+                  const mimeType = file.mimeType || "application/octet-stream";
+                  const name = file.filename || `file_${i}.txt`;
                   emit({
                     type: "text-delta",
                     id: currentTextId(),
-                    delta: `\n\n[${name}](${baseUrl}/threads/${threadId}/artifacts/${id})\n\n`,
+                    delta: `\n\n[${name}](data:${mimeType};base64,${b64})\n\n`,
                   });
                 }
               }

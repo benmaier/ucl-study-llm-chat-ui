@@ -113,17 +113,13 @@ function toUIPart(
         ? part.filename
         : part.filename.replace(/\.\w+$/, ".txt");
 
-      if (isImage) {
-        // Images: emit as data URI (works on serverless)
-        const mimeType = part.mimeType ?? "image/png";
-        const url = `data:${mimeType};base64,${part.base64Data}`;
-        return { type: "text", text: `\n\n![${displayName}](${url})\n\n` };
-      }
+      const mimeType = part.mimeType ?? (isImage ? "image/png" : "application/octet-stream");
+      const dataUri = `data:${mimeType};base64,${part.base64Data}`;
 
-      // Non-images: save to artifacts dir and link
-      const artifactId = writeArtifact(part.base64Data, part.filename, artifactsDir);
-      const url = `${apiBasePath}/threads/${threadId}/artifacts/${artifactId}`;
-      return { type: "text", text: `\n\n[${displayName}](${url})\n\n` };
+      if (isImage) {
+        return { type: "text", text: `\n\n![${displayName}](${dataUri})\n\n` };
+      }
+      return { type: "text", text: `\n\n[${displayName}](${dataUri})\n\n` };
     }
   }
 }
