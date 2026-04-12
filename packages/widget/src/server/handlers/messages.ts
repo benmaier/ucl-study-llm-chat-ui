@@ -108,15 +108,22 @@ function toUIPart(
       if (seenHashes.has(hash)) return null;
       seenHashes.add(hash);
 
-      const artifactId = writeArtifact(part.base64Data, part.filename, artifactsDir);
       const isImage = isImageData(part.base64Data);
       const displayName = isImage
         ? part.filename
         : part.filename.replace(/\.\w+$/, ".txt");
-      const url = `${apiBasePath}/threads/${threadId}/artifacts/${artifactId}`;
-      const md = isImage ? `![${displayName}](${url})` : `[${displayName}](${url})`;
 
-      return { type: "text", text: `\n\n${md}\n\n` };
+      if (isImage) {
+        // Images: emit as data URI (works on serverless)
+        const mimeType = part.mimeType ?? "image/png";
+        const url = `data:${mimeType};base64,${part.base64Data}`;
+        return { type: "text", text: `\n\n![${displayName}](${url})\n\n` };
+      }
+
+      // Non-images: save to artifacts dir and link
+      const artifactId = writeArtifact(part.base64Data, part.filename, artifactsDir);
+      const url = `${apiBasePath}/threads/${threadId}/artifacts/${artifactId}`;
+      return { type: "text", text: `\n\n[${displayName}](${url})\n\n` };
     }
   }
 }
