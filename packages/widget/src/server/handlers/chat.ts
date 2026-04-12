@@ -66,7 +66,10 @@ export function createChatHandler(config: ChatRouteConfig) {
     const lastUserMsg = messages.filter((m) => m.role === "user").pop();
     const messageText = extractText(lastUserMsg);
 
+    console.log(`[chat] POST threadId=${threadId} msgLen=${messageText?.length ?? 0} totalMsgs=${messages.length}`);
+
     if (!messageText) {
+      console.warn(`[chat] No user message found in request for thread ${threadId}`);
       return new Response(JSON.stringify({ error: "No user message" }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
@@ -99,6 +102,9 @@ export function createChatHandler(config: ChatRouteConfig) {
       }
     }
 
+    if (fileParts.length > 0) {
+      console.log(`[chat] Files: ${images.length} images (inline), ${fileIds.length} non-image (uploaded)`);
+    }
 
     let finalMessage = messageText;
     if (nonImageParts.length > 0) {

@@ -118,6 +118,9 @@ const useInnerRuntime = () => {
   const chat = useChat({
     id: threadItemId,
     transport: transportRef.current,
+    onError: (error) => {
+      console.error("[chat] Stream error:", error);
+    },
   });
 
   const runtime = useAISDKRuntime(chat);
@@ -138,13 +141,20 @@ const useInnerRuntime = () => {
     if (chatRef.current.messages.length > 0) return;
 
     fetch(`${apiBasePath}/threads/${remoteId}/messages`)
-      .then((res) => (res.ok ? res.json() : null))
+      .then((res) => {
+        if (!res.ok) {
+          console.error(`[chat] Failed to load messages for thread ${remoteId}: HTTP ${res.status}`);
+          return null;
+        }
+        return res.json();
+      })
       .then((data) => {
         if (data?.messages?.length) {
+          console.log(`[chat] Loaded ${data.messages.length} messages for thread ${remoteId}`);
           chatRef.current.setMessages(data.messages);
         }
       })
-      .catch(console.error)
+      .catch((err) => console.error(`[chat] Error loading messages for thread ${remoteId}:`, err))
       .finally(() => {
         requestAnimationFrame(() => {
           document.querySelector<HTMLTextAreaElement>(".aui-composer-input")?.focus();

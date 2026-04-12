@@ -180,13 +180,41 @@ export function createSseStream(
 
       emit({ type: "start" });
 
+      const sendOptions: Record<string, unknown> = {};
+      if (fileIds?.length) sendOptions.fileIds = fileIds;
+      if (images?.length) sendOptions.images = images;
+      if (traceFile) sendOptions.traceFile = traceFile;
+      const hasSendOptions = Object.keys(sendOptions).length > 0;
+
+      console.log(`[stream-mapper] send() starting — threadId=${threadId} msgLen=${message.length} files=${fileIds?.length ?? 0} images=${images?.length ?? 0}`);
+
+      const MAX_ATTEMPTS = 3;
+      let attempt = 0;
+
       try {
-        const sendOptions: Record<string, unknown> = {};
-        if (fileIds?.length) sendOptions.fileIds = fileIds;
-        if (images?.length) sendOptions.images = images;
-        if (traceFile) sendOptions.traceFile = traceFile;
-        const hasSendOptions = Object.keys(sendOptions).length > 0;
-        const result = await conversation.send(message, (event: StreamEvent) => {
+        let result: any;
+
+        while (attempt < MAX_ATTEMPTS) {
+          attempt++;
+
+          // Reset counters for each attempt
+          if (attempt > 1) {
+            textBlockOpen = false;
+            textBlockCounter = 0;
+            toolCallCounter = 0;
+            accumulatedInput = "";
+            accumulatedOutput = "";
+            toolInputFinalized = false;
+            currentToolName = "";
+            currentSdkToolId = undefined;
+            pendingToolEnd = false;
+            currentlyInTool = false;
+            streamedTextLength = 0;
+            deferredOutputTools.length = 0;
+            sdkToSseToolId.clear();
+          }
+
+        result = await conversation.send(message, (event: StreamEvent) => {
           // Debug: log every SDK event (enable with DEBUG_STREAMS=1)
           if (DEBUG_STREAMS) {
             const logEvent = { ...event } as Record<string, unknown>;
@@ -365,14 +393,34 @@ export function createSseStream(
           }
         }, hasSendOptions ? sendOptions : undefined);
 
-        if (DEBUG_STREAMS) {
-          console.log("[stream-mapper] send() completed. text length:", result?.text?.length ?? 0, "files:", result?.files?.length ?? 0, "codeArtifacts:", result?.codeArtifacts?.length ?? 0);
-        }
+        console.log(`[stream-mapper] send() completed (attempt ${attempt}/${MAX_ATTEMPTS}) — text=${result?.text?.length ?? 0} files=${result?.files?.length ?? 0} artifacts=${result?.codeArtifacts?.length ?? 0} streamedText=${streamedTextLength} tools=${toolCallCounter}`);
         traceLog("sdk", "SEND_RESULT", {
+          attempt,
           textLength: result?.text?.length ?? 0,
           filesCount: result?.files?.length ?? 0,
           codeArtifactsCount: result?.codeArtifacts?.length ?? 0,
+          streamedTextLength,
+          toolCallCounter,
         });
+
+        // Check if we got any content
+        if (streamedTextLength > 0 || toolCallCounter > 0) {
+          break; // Got content, exit retry loop
+        }
+
+        // Empty response — retry if we have attempts left
+        if (attempt < MAX_ATTEMPTS) {
+          console.warn(`[stream-mapper] Empty response on attempt ${attempt}/${MAX_ATTEMPTS}, retrying in 3s...`);
+          emit({ type: "error", errorText: `Empty response from model, retrying (${attempt}/${MAX_ATTEMPTS})...` });
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+
+        // All attempts exhausted
+        console.error(`[stream-mapper] Empty response after ${MAX_ATTEMPTS} attempts`);
+        emit({ type: "error", errorText: `The model returned empty responses after ${MAX_ATTEMPTS} attempts. Please try again.` });
+
+        } // end retry while loop
 
         // Flush any pending tool output
         flushPendingTool();
@@ -470,6 +518,8 @@ export function createSseStream(
             }
           } catch (fileErr) {
             console.error("[stream-mapper] Error downloading files:", fileErr);
+            const errMsg = fileErr instanceof Error ? fileErr.message : String(fileErr);
+            emit({ type: "error", errorText: `File download failed: ${errMsg}` });
           } finally {
             if (tmpDir) {
               try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
@@ -479,7 +529,7 @@ export function createSseStream(
 
         emit({ type: "finish" });
       } catch (err) {
-        console.error("[stream-mapper] Stream error:", err);
+        console.error(`[stream-mapper] Stream error — threadId=${threadId} attempt=${attempt}:`, err);
         closeTextBlock();
         const errorMsg = err instanceof Error
           ? `${err.message}${err.cause ? `\nCause: ${err.cause}` : ""}`

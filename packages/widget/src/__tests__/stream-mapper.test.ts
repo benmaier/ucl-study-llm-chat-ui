@@ -97,13 +97,20 @@ describe("createSseStream", () => {
     expect(sse[6]).toEqual({ type: "finish" });
   });
 
-  it("empty response produces start → finish only", async () => {
+  it("empty response retries 3 times with error messages", async () => {
     const conv = mockConversation([]);
     const stream = createSseStream(conv, "Hello", testOptions);
     const sse = await collectSseEvents(stream);
 
-    expect(sse).toEqual([{ type: "start" }, { type: "finish" }]);
-  });
+    // Should have: start, error(retry 1), error(retry 2), error(final), finish
+    expect(sse[0]).toEqual({ type: "start" });
+    const errors = sse.filter((e) => e.type === "error");
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    // Final error should mention "3 attempts"
+    const finalError = errors[errors.length - 1];
+    expect(String(finalError.errorText)).toMatch(/3 attempts/);
+    expect(sse[sse.length - 1]).toEqual({ type: "finish" });
+  }, 15_000); // 3 retries × 3s = 9s + overhead
 
   // -----------------------------------------------------------------------
   // Single tool call — Claude pattern (code_output AFTER tool_end)
