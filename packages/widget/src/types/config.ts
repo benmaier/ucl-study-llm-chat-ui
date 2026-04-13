@@ -77,4 +77,8 @@ export interface ChatRouteConfig {
    *  constructor instead of relying on process.env. Critical for serverless
    *  environments where concurrent requests share the same process. */
   apiKey?: string;
+  /** Fallback provider if the primary fails or returns empty. Passed to SDK. */
+  fallbackProvider?: "anthropic" | "openai" | "gemini";
+  /** Fallback model override for the fallback provider. */
+  fallbackModel?: string;
 }
