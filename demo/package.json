@@ -11,7 +11,7 @@
     "test:e2e:headed": "npx playwright test --headed"
   },
   "dependencies": {
-    "ucl-chat-widget": "^0.3.11",
+    "ucl-chat-widget": "^0.3.12",
     "ucl-study-llm-chat-api": "github:benmaier/ucl-study-llm-chat-api",
     "next": "16.1.6",
     "react": "19.2.3",
