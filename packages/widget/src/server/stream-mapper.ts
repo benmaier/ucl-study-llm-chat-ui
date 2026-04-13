@@ -455,6 +455,7 @@ export function createSseStream(
           let hasInlineContent = false;
 
           for (const file of result.files) {
+            console.log(`[stream-mapper] file: id=${file.file_id} name=${file.filename} mime=${file.mimeType} hasBase64=${!!file.base64Data}`);
             // Deduplicate by hash
             const hashInput = file.base64Data || file.file_id || file.filename;
             if (hashInput) {
@@ -464,11 +465,14 @@ export function createSseStream(
             }
 
             const fileId = file.file_id;
-            // Detect image by mimeType OR filename extension — don't default to image
+            // Detect image: mimeType takes priority over extension (SDK sometimes
+            // returns CSVs with .png extension but correct text/csv mimeType)
             const ext = (file.filename || "").split(".").pop()?.toLowerCase() || "";
             const imageExts = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
             const mimeType = file.mimeType || (imageExts.has(ext) ? `image/${ext === "jpg" ? "jpeg" : ext}` : "application/octet-stream");
-            const isImage = mimeType.startsWith("image/") || imageExts.has(ext);
+            const isImage = file.mimeType
+              ? file.mimeType.startsWith("image/")
+              : imageExts.has(ext);
             const name = file.filename || `output.${isImage ? "png" : "txt"}`;
             const url = `${baseUrl}/threads/${threadId}/files/${fileId}`;
 

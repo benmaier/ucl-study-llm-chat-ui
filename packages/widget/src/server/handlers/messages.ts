@@ -87,9 +87,7 @@ function toUIPart(
       seenHashes.add(hash);
 
       const isImage = isImageData(part.base64Data);
-      const displayName = isImage
-        ? part.filename
-        : part.filename.replace(/\.\w+$/, ".txt");
+      const displayName = part.filename;
 
       // Serve via /api/threads/{id}/files/{fileId} — reads from stored base64Data
       const url = `${apiBasePath}/threads/${threadId}/files/${part.fileId}`;
