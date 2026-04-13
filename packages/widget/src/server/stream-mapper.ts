@@ -461,8 +461,11 @@ export function createSseStream(
             }
 
             const fileId = file.file_id;
-            const mimeType = file.mimeType || "image/png";
-            const isImage = mimeType.startsWith("image/");
+            // Detect image by mimeType OR filename extension — don't default to image
+            const ext = (file.filename || "").split(".").pop()?.toLowerCase() || "";
+            const imageExts = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
+            const mimeType = file.mimeType || (imageExts.has(ext) ? `image/${ext === "jpg" ? "jpeg" : ext}` : "application/octet-stream");
+            const isImage = mimeType.startsWith("image/") || imageExts.has(ext);
             const name = file.filename || `output.${isImage ? "png" : "txt"}`;
             const url = `${baseUrl}/threads/${threadId}/files/${fileId}`;
 
