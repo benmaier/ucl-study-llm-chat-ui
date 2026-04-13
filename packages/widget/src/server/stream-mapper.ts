@@ -452,94 +452,58 @@ export function createSseStream(
         closeTextBlock();
 
         // Emit generated files — images as inline data URIs, others as artifact links
+        // Emit generated files as links served via /api/threads/{id}/files/{fileId}
+        // The files route reads base64Data from the stored conversation — works on serverless.
         if (result?.files?.length) {
           const seenHashes = new Set<string>();
           let hasInlineContent = false;
 
-          // First pass: emit files that already have base64Data (Gemini inline, or SDK-captured)
           for (const file of result.files) {
-            if (file.base64Data) {
-              const hash = crypto.createHash("sha256").update(file.base64Data).digest("hex");
+            // Deduplicate
+            const hashInput = file.base64Data || file.file_id || file.filename;
+            if (hashInput) {
+              const hash = crypto.createHash("sha256").update(hashInput).digest("hex");
               if (seenHashes.has(hash)) continue;
               seenHashes.add(hash);
+            }
 
-              const mimeType = file.mimeType || "image/png";
-              const isImage = mimeType.startsWith("image/");
-              const name = file.filename || `output.${isImage ? "png" : "txt"}`;
+            const fileId = file.file_id;
+            const mimeType = file.mimeType || "image/png";
+            const isImage = mimeType.startsWith("image/");
+            const name = file.filename || `output.${isImage ? "png" : "txt"}`;
+            const url = `${baseUrl}/threads/${threadId}/files/${fileId}`;
 
-              if (!hasInlineContent) { openTextBlock(); hasInlineContent = true; }
+            if (!hasInlineContent) { openTextBlock(); hasInlineContent = true; }
 
-              if (isImage) {
-                emit({
-                  type: "text-delta",
-                  id: currentTextId(),
-                  delta: `\n\n![${name}](data:${mimeType};base64,${file.base64Data})\n\n`,
-                });
-              } else {
-                // Non-image: data URI download link
-                emit({
-                  type: "text-delta",
-                  id: currentTextId(),
-                  delta: `\n\n[${name}](data:${mimeType};base64,${file.base64Data})\n\n`,
-                });
-              }
+            if (isImage) {
+              emit({
+                type: "text-delta",
+                id: currentTextId(),
+                delta: `\n\n![${name}](${url})\n\n`,
+              });
+            } else {
+              emit({
+                type: "text-delta",
+                id: currentTextId(),
+                delta: `\n\n[${name}](${url})\n\n`,
+              });
             }
           }
 
-          // Second pass: download files that DON'T have base64Data (Anthropic/OpenAI container files)
+          // For files without base64Data (not yet captured), download them
+          // so captureGeneratedFileData can store base64 for the files route
           const needsDownload = result.files.filter((f: any) => !f.base64Data && f.file_id);
           if (needsDownload.length > 0) {
-            let tmpDir: string | undefined;
             try {
-              tmpDir = join(os.tmpdir(), `chat-files-${Date.now()}`);
+              // Trigger download to populate base64Data on the file objects
+              // (captureGeneratedFileData is called by conversation.send() already,
+              //  but if it failed, try again here)
+              const tmpDir = join(os.tmpdir(), `chat-files-${Date.now()}`);
               mkdirSync(tmpDir, { recursive: true });
-              const paths = await conversation.downloadFiles(needsDownload, tmpDir);
-
-              for (let i = 0; i < paths.length; i++) {
-                const downloadedPath = paths[i];
-                const file = needsDownload[i];
-                const content = readFileSync(downloadedPath);
-
-                const hash = crypto.createHash("sha256").update(content).digest("hex");
-                if (seenHashes.has(hash)) continue;
-                seenHashes.add(hash);
-
-                const isPng = content[0] === 0x89 && content[1] === 0x50 && content[2] === 0x4E && content[3] === 0x47;
-                const isJpeg = content[0] === 0xFF && content[1] === 0xD8;
-                const isImage = isPng || isJpeg;
-
-                if (!hasInlineContent) { openTextBlock(); hasInlineContent = true; }
-
-                if (isImage) {
-                  // Emit as data URI — works on serverless
-                  const b64 = content.toString("base64");
-                  const mimeType = isPng ? "image/png" : "image/jpeg";
-                  const name = file.filename || `image_${i}.png`;
-                  emit({
-                    type: "text-delta",
-                    id: currentTextId(),
-                    delta: `\n\n![${name}](data:${mimeType};base64,${b64})\n\n`,
-                  });
-                } else {
-                  // Non-image: data URI download link
-                  const b64 = content.toString("base64");
-                  const mimeType = file.mimeType || "application/octet-stream";
-                  const name = file.filename || `file_${i}.txt`;
-                  emit({
-                    type: "text-delta",
-                    id: currentTextId(),
-                    delta: `\n\n[${name}](data:${mimeType};base64,${b64})\n\n`,
-                  });
-                }
-              }
-            } catch (fileErr) {
-              console.error("[stream-mapper] Error downloading files:", fileErr);
-              const errMsg = fileErr instanceof Error ? fileErr.message : String(fileErr);
-              emit({ type: "error", errorText: `File download failed: ${errMsg}` });
-            } finally {
-              if (tmpDir) {
-                try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-              }
+              await conversation.downloadFiles(needsDownload, tmpDir);
+              rmSync(tmpDir, { recursive: true, force: true });
+            } catch (e) {
+              console.error("[stream-mapper] Error pre-downloading files:", e);
             }
           }
 

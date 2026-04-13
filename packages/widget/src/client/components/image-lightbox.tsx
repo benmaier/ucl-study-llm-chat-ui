@@ -28,6 +28,9 @@ export function ImageLightbox({
     return () => document.removeEventListener("keydown", onKey);
   }, [open, close]);
 
+  // Don't render if src is empty (happens during streaming re-parse)
+  if (!src) return null;
+
   return (
     <>
       {/* eslint-disable-next-line @next/next/no-img-element */}

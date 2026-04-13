@@ -113,13 +113,13 @@ function toUIPart(
         ? part.filename
         : part.filename.replace(/\.\w+$/, ".txt");
 
-      const mimeType = part.mimeType ?? (isImage ? "image/png" : "application/octet-stream");
-      const dataUri = `data:${mimeType};base64,${part.base64Data}`;
+      // Link to /api/threads/{id}/files/{fileId} — serves from stored base64Data
+      const url = `${apiBasePath}/threads/${threadId}/files/${part.fileId}`;
 
       if (isImage) {
-        return { type: "text", text: `\n\n![${displayName}](${dataUri})\n\n` };
+        return { type: "text", text: `\n\n![${displayName}](${url})\n\n` };
       }
-      return { type: "text", text: `\n\n[${displayName}](${dataUri})\n\n` };
+      return { type: "text", text: `\n\n[${displayName}](${url})\n\n` };
     }
   }
 }
