@@ -455,7 +455,7 @@ export function createSseStream(
           let hasInlineContent = false;
 
           for (const file of result.files) {
-            console.log(`[stream-mapper] file: id=${file.file_id} name=${file.filename} mime=${file.mimeType} hasBase64=${!!file.base64Data}`);
+            console.log(`[stream-mapper] file: id=${file.file_id} name=${file.filename} mime=${file.mimeType} base64Len=${file.base64Data?.length ?? 0}`);
             // Deduplicate by hash
             const hashInput = file.base64Data || file.file_id || file.filename;
             if (hashInput) {
@@ -480,7 +480,6 @@ export function createSseStream(
 
             if (isImage) {
               // Skip if the model already streamed image markdown (e.g. OpenAI file citations).
-              // For providers that don't render images in text (Anthropic), emit them here.
               if (streamedImageCount > 0) continue;
               emit({
                 type: "text-delta",

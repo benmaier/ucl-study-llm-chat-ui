@@ -93,6 +93,8 @@ function toUIPart(
       const url = `${apiBasePath}/threads/${threadId}/files/${part.fileId}`;
 
       if (isImage) {
+        // Skip blank/tiny images (Gemini's plt.show() emits empty canvases)
+        if (part.base64Data && part.base64Data.length < 1000) return null;
         return { type: "text", text: `\n\n![${displayName}](${url})\n\n` };
       }
       return { type: "text", text: `\n\n[${displayName}](${url})\n\n` };
