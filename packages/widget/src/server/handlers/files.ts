@@ -32,9 +32,11 @@ export function createFilesHandler(config: ChatRouteConfig) {
         if (file.fileId === fileId && file.base64Data) {
           const buffer = Buffer.from(file.base64Data, "base64");
           const mimeType = file.mimeType || "application/octet-stream";
+          const filename = file.filename || "download";
           return new Response(buffer, {
             headers: {
               "Content-Type": mimeType,
+              "Content-Disposition": `attachment; filename="${filename}"`,
               "Cache-Control": "public, max-age=31536000, immutable",
             },
           });
@@ -48,9 +50,11 @@ export function createFilesHandler(config: ChatRouteConfig) {
         if (imgId === fileId && inlineImages[i].base64Data) {
           const buffer = Buffer.from(inlineImages[i].base64Data, "base64");
           const mimeType = inlineImages[i].mediaType || "image/png";
+          const ext = mimeType.split("/")[1] || "png";
           return new Response(buffer, {
             headers: {
               "Content-Type": mimeType,
+              "Content-Disposition": `attachment; filename="image-${i + 1}.${ext}"`,
               "Cache-Control": "public, max-age=31536000, immutable",
             },
           });

@@ -451,8 +451,12 @@ export function createSseStream(
           const seenHashes = new Set<string>();
           let hasInlineContent = false;
 
+          // Check if the model's text already contains rendered images
+          const resultText = result?.text ?? "";
+          const modelHasImages = /!\[.*?\]\(.*?\)/.test(resultText);
+
           for (const file of result.files) {
-            // Deduplicate
+            // Deduplicate by hash
             const hashInput = file.base64Data || file.file_id || file.filename;
             if (hashInput) {
               const hash = crypto.createHash("sha256").update(hashInput).digest("hex");
@@ -472,6 +476,9 @@ export function createSseStream(
             if (!hasInlineContent) { openTextBlock(); hasInlineContent = true; }
 
             if (isImage) {
+              // Skip if the model already rendered images in its text
+              // (OpenAI adds file citation annotations that become markdown images)
+              if (modelHasImages) continue;
               emit({
                 type: "text-delta",
                 id: currentTextId(),
