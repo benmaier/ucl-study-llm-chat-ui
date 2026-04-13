@@ -95,6 +95,7 @@ export function createSseStream(
       let pendingToolEnd = false; // tool_end fired but output not yet emitted
       let currentlyInTool = false; // between tool_start and tool_end
       let streamedTextLength = 0; // total chars streamed via text events
+      let streamedImageCount = 0; // number of ![...]() images in streamed text
       let streamClosed = false;
       /** Tools that were flushed (counter advanced) before their output arrived.
        *  Each entry holds the toolCallId to emit output-available for later. */
@@ -239,6 +240,8 @@ export function createSseStream(
                 delta: txt,
               });
               streamedTextLength += txt.length;
+              // Track if the model streams image markdown (OpenAI file citations)
+              if (/!\[.*?\]\(.*?\)/.test(txt)) streamedImageCount++;
               break;
             }
 
@@ -451,10 +454,6 @@ export function createSseStream(
           const seenHashes = new Set<string>();
           let hasInlineContent = false;
 
-          // Check if the model's text already contains rendered images
-          const resultText = result?.text ?? "";
-          const modelHasImages = /!\[.*?\]\(.*?\)/.test(resultText);
-
           for (const file of result.files) {
             // Deduplicate by hash
             const hashInput = file.base64Data || file.file_id || file.filename;
@@ -476,9 +475,9 @@ export function createSseStream(
             if (!hasInlineContent) { openTextBlock(); hasInlineContent = true; }
 
             if (isImage) {
-              // Skip if the model already rendered images in its text
-              // (OpenAI adds file citation annotations that become markdown images)
-              if (modelHasImages) continue;
+              // Skip if the model already streamed image markdown (e.g. OpenAI file citations).
+              // For providers that don't render images in text (Anthropic), emit them here.
+              if (streamedImageCount > 0) continue;
               emit({
                 type: "text-delta",
                 id: currentTextId(),
