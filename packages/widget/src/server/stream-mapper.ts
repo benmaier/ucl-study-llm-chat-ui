@@ -13,9 +13,7 @@
 
 import type { Conversation } from "ucl-study-llm-chat-api";
 import type { StreamEvent } from "ucl-study-llm-chat-api";
-import { readFileSync, mkdirSync, rmSync, copyFileSync, appendFileSync } from "fs";
-import { join, extname } from "path";
-import os from "os";
+import { appendFileSync } from "fs";
 import crypto from "crypto";
 
 /** Enable verbose per-event logging with DEBUG_STREAMS=1 */
@@ -51,9 +49,7 @@ export interface SseStreamOptions {
   fileIds?: string[];
   /** Images to embed as visual content in the LLM prompt. */
   images?: Array<{ base64Data: string; mediaType: string }>;
-  /** Directory to save generated artifacts (plots, text files). */
-  artifactsDir: string;
-  /** Thread ID for constructing artifact URLs. */
+  /** Thread ID for constructing file URLs. */
   threadId: string;
   /** When set, append JSONL trace entries to this file path. */
   traceFile?: string;
@@ -74,11 +70,8 @@ export function createSseStream(
   message: string,
   options: SseStreamOptions,
 ): ReadableStream {
-  const { fileIds, images, artifactsDir, threadId, traceFile, apiBasePath, deferToolOutput } = options;
+  const { fileIds, images, threadId, traceFile, apiBasePath, deferToolOutput } = options;
   const baseUrl = apiBasePath ?? "/api";
-
-  // Ensure artifacts directory exists
-  mkdirSync(artifactsDir, { recursive: true });
 
   /** Append a JSONL trace entry if traceFile is set. */
   function traceLog(layer: string, type: string, data: Record<string, unknown>) {
@@ -487,23 +480,6 @@ export function createSseStream(
                 id: currentTextId(),
                 delta: `\n\n[${name}](${url})\n\n`,
               });
-            }
-          }
-
-          // For files without base64Data (not yet captured), download them
-          // so captureGeneratedFileData can store base64 for the files route
-          const needsDownload = result.files.filter((f: any) => !f.base64Data && f.file_id);
-          if (needsDownload.length > 0) {
-            try {
-              // Trigger download to populate base64Data on the file objects
-              // (captureGeneratedFileData is called by conversation.send() already,
-              //  but if it failed, try again here)
-              const tmpDir = join(os.tmpdir(), `chat-files-${Date.now()}`);
-              mkdirSync(tmpDir, { recursive: true });
-              await conversation.downloadFiles(needsDownload, tmpDir);
-              rmSync(tmpDir, { recursive: true, force: true });
-            } catch (e) {
-              console.error("[stream-mapper] Error pre-downloading files:", e);
             }
           }
 

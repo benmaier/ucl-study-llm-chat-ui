@@ -129,7 +129,6 @@ export function createChatHandler(config: ChatRouteConfig) {
     const stream = createSseStream(conversation, finalMessage, {
       fileIds: fileIds.length > 0 ? fileIds : undefined,
       images: images.length > 0 ? images : undefined,
-      artifactsDir: backend.artifactsDirForThread(threadId),
       threadId,
       traceFile,
       apiBasePath: config.apiBasePath,

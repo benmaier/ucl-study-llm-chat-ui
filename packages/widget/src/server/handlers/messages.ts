@@ -8,9 +8,7 @@ import {
   convertTurnsToMessages,
   type UnifiedMessagePart,
 } from "ucl-study-llm-chat-api";
-import { writeFileSync, mkdirSync } from "fs";
 import crypto from "crypto";
-import path from "path";
 
 import type { ChatRouteConfig } from "../../types/config.js";
 
@@ -43,25 +41,6 @@ interface UIMessageOut {
   parts: UIPart[];
 }
 
-function writeArtifact(
-  base64Data: string,
-  filename: string,
-  artifactsDir: string,
-): string {
-  const origExt = path.extname(filename || ".png") || ".png";
-  const buf = Buffer.from(base64Data, "base64");
-  const isPng =
-    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47;
-  const isJpeg = buf[0] === 0xff && buf[1] === 0xd8;
-  const ext = isPng || isJpeg ? origExt : ".txt";
-
-  const id = crypto.randomUUID() + ext;
-  const filePath = path.join(artifactsDir, id);
-  mkdirSync(artifactsDir, { recursive: true });
-  writeFileSync(filePath, buf);
-  return id;
-}
-
 function isImageData(base64Data: string): boolean {
   const buf = Buffer.from(base64Data, "base64");
   const isPng =
@@ -74,7 +53,6 @@ function toUIPart(
   part: UnifiedMessagePart,
   role: "user" | "assistant",
   threadId: string,
-  artifactsDir: string,
   seenHashes: Set<string>,
   apiBasePath: string,
 ): UIPart | null {
@@ -113,7 +91,7 @@ function toUIPart(
         ? part.filename
         : part.filename.replace(/\.\w+$/, ".txt");
 
-      // Link to /api/threads/{id}/files/{fileId} — serves from stored base64Data
+      // Serve via /api/threads/{id}/files/{fileId} — reads from stored base64Data
       const url = `${apiBasePath}/threads/${threadId}/files/${part.fileId}`;
 
       if (isImage) {
@@ -139,7 +117,6 @@ export function createMessagesHandler(config: ChatRouteConfig) {
       return Response.json({ messages: [] });
     }
 
-    const artifactsDir = backend.artifactsDirForThread(threadId);
     const seenHashes = new Set<string>();
 
     const unified = convertTurnsToMessages(
@@ -152,7 +129,7 @@ export function createMessagesHandler(config: ChatRouteConfig) {
       id: msg.id,
       parts: msg.parts
         .map((part) =>
-          toUIPart(part, msg.role, threadId, artifactsDir, seenHashes, apiBasePath),
+          toUIPart(part, msg.role, threadId, seenHashes, apiBasePath),
         )
         .filter((p): p is UIPart => p !== null),
     }));
