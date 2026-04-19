@@ -59,6 +59,11 @@ export interface SseStreamOptions {
    *  Set to true for OpenAI where outputs arrive after the stream ends.
    *  Default: false (Claude/Gemini send output between tool_end and next event). */
   deferToolOutput?: boolean;
+  /** Optional promise awaited before the stream's controller closes. Used for
+   *  fire-and-forget tasks (e.g. title generation) that must complete before
+   *  the response body ends — otherwise the serverless function may freeze
+   *  and the task is lost. Errors are swallowed. */
+  backgroundTask?: Promise<void>;
 }
 
 /**
@@ -70,7 +75,7 @@ export function createSseStream(
   message: string,
   options: SseStreamOptions,
 ): ReadableStream {
-  const { fileIds, images, threadId, traceFile, apiBasePath, deferToolOutput } = options;
+  const { fileIds, images, threadId, traceFile, apiBasePath, deferToolOutput, backgroundTask } = options;
   const baseUrl = apiBasePath ?? "/api";
 
   /** Append a JSONL trace entry if traceFile is set. */
@@ -507,6 +512,13 @@ export function createSseStream(
           : String(err);
         emit({ type: "error", errorText: errorMsg });
       } finally {
+        // Keep the response body open until background work (title gen, etc.)
+        // finishes — serverless functions may freeze the moment the body closes.
+        if (backgroundTask) {
+          try { await backgroundTask; } catch (err) {
+            console.error(`[stream-mapper] Background task error — threadId=${threadId}:`, err);
+          }
+        }
         if (!streamClosed) {
           try { controller.close(); } catch {}
         }

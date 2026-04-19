@@ -232,17 +232,43 @@ describe("FileConversationBackend", () => {
     expect(meta).toBeNull();
   });
 
-  it("updateThreadTitle writes title to metadata", async () => {
+  it("updateThreadTitle writes title to a separate file (survives conversation.json rewrites)", async () => {
     const dir = path.join(tmpDir, "rename-thread");
     mkdirSync(dir, { recursive: true });
-    const filePath = path.join(dir, "conversation.json");
-    writeFileSync(filePath, JSON.stringify({ id: "rename-thread", turns: [] }));
+    const convPath = path.join(dir, "conversation.json");
+    writeFileSync(convPath, JSON.stringify({ id: "rename-thread", turns: [{ role: "user" }] }));
 
     const backend = createBackend();
     await backend.updateThreadTitle("rename-thread", "New Name");
 
-    const data = JSON.parse(require("fs").readFileSync(filePath, "utf-8"));
-    expect(data.metadata.title).toBe("New Name");
+    // Title lives in title.txt, not in conversation.json — so the SDK's
+    // FileWriter rewriting conversation.json after every turn can't clobber it.
+    const titlePath = path.join(dir, "title.txt");
+    expect(require("fs").readFileSync(titlePath, "utf-8")).toBe("New Name");
+
+    const convData = JSON.parse(require("fs").readFileSync(convPath, "utf-8"));
+    expect(convData.metadata).toBeUndefined();
+
+    // listThreads picks it up
+    const { threads } = await backend.listThreads();
+    expect(threads[0].title).toBe("New Name");
+  });
+
+  it("listThreads falls back to legacy metadata.title if title.txt is missing", async () => {
+    const dir = path.join(tmpDir, "legacy-thread");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "conversation.json"),
+      JSON.stringify({
+        id: "legacy-thread",
+        turns: [{ role: "user" }],
+        metadata: { title: "Legacy Title" },
+      }),
+    );
+
+    const backend = createBackend();
+    const { threads } = await backend.listThreads();
+    expect(threads[0].title).toBe("Legacy Title");
   });
 
   it("getConversationData returns parsed data", async () => {

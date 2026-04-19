@@ -4,6 +4,7 @@
 
 import { resolveBackend } from "../conversation-store.js";
 import { createSseStream } from "../stream-mapper.js";
+import { generateThreadTitle } from "../title-gen.js";
 import { mkdirSync } from "fs";
 import path from "path";
 
@@ -77,10 +78,24 @@ export function createChatHandler(config: ChatRouteConfig) {
     }
 
     const conversation = await backend.getOrCreateConversation(threadId);
+    const isFirstTurn = conversation.getTurns().length === 0;
 
     // Notify backend of user message before send() — so the conversation is non-empty in the DB
     if (backend.onUserMessageReceived) {
       await backend.onUserMessageReceived(threadId, messageText);
+    }
+
+    // Title generation on the first user message. Runs in parallel with send(),
+    // but is awaited by the SSE stream before controller.close() so the
+    // serverless function can't freeze before the DB write lands. On failure
+    // the title stays null and the sidebar falls back to "Chat N".
+    let titleTask: Promise<void> | undefined;
+    if (isFirstTurn) {
+      titleTask = generateThreadTitle(config, messageText)
+        .then(title => {
+          if (title) return backend.updateThreadTitle(threadId, title);
+        })
+        .catch(err => console.error("[chat] Title generation error:", err));
     }
 
     const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"]);
@@ -133,6 +148,7 @@ export function createChatHandler(config: ChatRouteConfig) {
       traceFile,
       apiBasePath: config.apiBasePath,
       deferToolOutput: config.provider === "openai",
+      backgroundTask: titleTask,
     });
 
     return new Response(stream, {
