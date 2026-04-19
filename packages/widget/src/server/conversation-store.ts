@@ -77,6 +77,14 @@ export class FileConversationBackend implements ConversationBackend {
     return path.join(this.conversationsDir, safe, "conversation.json");
   }
 
+  /** Path to widget-owned title file. Kept separate from conversation.json
+   *  so the SDK's FileWriter (which rewrites the whole file after every turn)
+   *  can't clobber it. */
+  titlePathForThread(threadId: string): string {
+    const safe = sanitizeId(threadId);
+    return path.join(this.conversationsDir, safe, "title.txt");
+  }
+
   /** Path to artifacts directory for a given thread. */
   artifactsDirForThread(threadId: string): string {
     const safe = sanitizeId(threadId);
@@ -154,9 +162,15 @@ export class FileConversationBackend implements ConversationBackend {
         const raw = JSON.parse(readFileSync(jsonPath, "utf-8"));
         const turns = Array.isArray(raw.turns) ? raw.turns : [];
         if (turns.length === 0) continue;
+        // Prefer the separate title.txt; fall back to legacy metadata.title
+        // on older conversations so existing threads aren't relabeled.
+        const titlePath = path.join(this.conversationsDir, name.name, "title.txt");
+        const titleFromFile = existsSync(titlePath)
+          ? readFileSync(titlePath, "utf-8").trim() || undefined
+          : undefined;
         entries.push({
           id: raw.id ?? name.name,
-          title: raw.metadata?.title,
+          title: titleFromFile ?? raw.metadata?.title,
           createdAt: raw.createdAt ?? "",
         });
       } catch {
@@ -187,12 +201,8 @@ export class FileConversationBackend implements ConversationBackend {
   }
 
   async updateThreadTitle(threadId: string, title: string): Promise<void> {
-    const filePath = this.filePathForThread(threadId);
-    if (!existsSync(filePath)) throw new Error("Not found");
-    const data = JSON.parse(readFileSync(filePath, "utf-8"));
-    if (!data.metadata) data.metadata = {};
-    data.metadata.title = title;
-    writeFileSync(filePath, JSON.stringify(data, null, 2));
+    this.ensureThreadDirs(threadId);
+    writeFileSync(this.titlePathForThread(threadId), title);
   }
 
   async getConversationData(
