@@ -92,14 +92,17 @@ export function createChatHandler(config: ChatRouteConfig) {
     //
     // Provider is read from the Conversation instance (not config.provider)
     // so this works for custom backends that don't set config.provider.
+    // API key resolves via backend.getApiKey() (for pool-backed backends)
+    // then config.apiKey, then the SDK client's env-var fallback.
     let titleTask: Promise<void> | undefined;
     if (isFirstTurn) {
       const provider = conversation.getProvider();
-      titleTask = generateThreadTitle(provider, config.apiKey, messageText)
-        .then(title => {
-          if (title) return backend.updateThreadTitle(threadId, title);
-        })
-        .catch(err => console.error("[chat] Title generation error:", err));
+      titleTask = (async () => {
+        const apiKey =
+          (await backend.getApiKey?.(provider)) ?? config.apiKey;
+        const title = await generateThreadTitle(provider, apiKey, messageText);
+        if (title) await backend.updateThreadTitle(threadId, title);
+      })().catch(err => console.error("[chat] Title generation error:", err));
     }
 
     const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"]);

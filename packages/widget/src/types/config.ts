@@ -50,6 +50,14 @@ export interface ConversationBackend {
   artifactsDirForThread(threadId: string): string;
   /** Called when a user message is received, before send(). Store it immediately so the conversation is non-empty. */
   onUserMessageReceived?(threadId: string, message: string): Promise<void>;
+  /** Resolve an API key for side-channel LLM calls (e.g. title generation)
+   *  that bypass the main `send()` path. Backends backed by a key pool
+   *  should implement this so one-shot helpers can borrow a key without
+   *  going through the main turn flow.
+   *
+   *  If omitted (or it returns `undefined`), callers fall back to
+   *  `ChatRouteConfig.apiKey`, then to the SDK client's env-var default. */
+  getApiKey?(provider: "anthropic" | "openai" | "gemini"): Promise<string | undefined>;
 }
 
 /** Server-side configuration for route handler factories. */
