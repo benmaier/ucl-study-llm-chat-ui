@@ -89,9 +89,13 @@ export function createChatHandler(config: ChatRouteConfig) {
     // but is awaited by the SSE stream before controller.close() so the
     // serverless function can't freeze before the DB write lands. On failure
     // the title stays null and the sidebar falls back to "Chat N".
+    //
+    // Provider is read from the Conversation instance (not config.provider)
+    // so this works for custom backends that don't set config.provider.
     let titleTask: Promise<void> | undefined;
     if (isFirstTurn) {
-      titleTask = generateThreadTitle(config, messageText)
+      const provider = conversation.getProvider();
+      titleTask = generateThreadTitle(provider, config.apiKey, messageText)
         .then(title => {
           if (title) return backend.updateThreadTitle(threadId, title);
         })
