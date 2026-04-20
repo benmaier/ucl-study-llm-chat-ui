@@ -1,9 +1,9 @@
 /**
  * LLM-generated thread titles.
  *
- * Called fire-and-forget after the first user turn. Uses the cheapest
- * model available on the configured provider, with no Conversation/writer
- * instance attached — pure one-shot chat call.
+ * Called from the chat handler on the first user turn. Uses the cheapest
+ * model available on whatever provider the Conversation was created with,
+ * with no writers attached — pure one-shot chat call.
  *
  * On any failure returns null; the caller leaves the title untouched
  * so the sidebar falls back to "Chat N".
@@ -18,9 +18,7 @@ import {
   chatWithGemini,
 } from "ucl-study-llm-chat-api";
 
-import type { ChatRouteConfig } from "../types/config.js";
-
-type Provider = NonNullable<ChatRouteConfig["provider"]>;
+type Provider = "anthropic" | "openai" | "gemini";
 
 /** Cheapest model per provider suitable for 3-5 word title generation. */
 const TITLE_MODELS: Record<Provider, string> = {
@@ -45,30 +43,48 @@ function sanitizeTitle(raw: string): string {
     .trim();
 }
 
+/**
+ * Generate a short title for a thread from the first user message.
+ *
+ * @param provider - Which provider to use. Derive from `conversation.getProvider()`
+ *   so title-gen always uses the same provider as the live chat (critical
+ *   when the widget is wired to a custom backend that doesn't set
+ *   `config.provider`).
+ * @param apiKey - Optional API key override. If omitted, each SDK's client
+ *   falls back to its environment variable (ANTHROPIC_API_KEY / OPENAI_API_KEY
+ *   / GEMINI_API_KEY|GOOGLE_API_KEY). Pass the same key the Conversation
+ *   was created with when using a per-request key pool.
+ * @param userMessage - The first user message to summarize.
+ */
 export async function generateThreadTitle(
-  config: ChatRouteConfig,
+  provider: Provider,
+  apiKey: string | undefined,
   userMessage: string,
 ): Promise<string | null> {
-  const provider = config.provider;
-  if (!provider) return null;
-
   const model = TITLE_MODELS[provider];
   const prompt = `${TITLE_PROMPT}${userMessage.slice(0, 2000)}`;
+
+  console.log(`[title-gen] Starting — provider=${provider} model=${model}`);
 
   try {
     let raw: string;
     if (provider === "anthropic") {
-      const client = createAnthropicClient(config.apiKey);
+      const client = createAnthropicClient(apiKey);
       raw = await chatWithClaude(client, prompt, { model, maxTokens: 32 });
     } else if (provider === "openai") {
-      const client = createOpenAIClient(config.apiKey);
+      const client = createOpenAIClient(apiKey);
       raw = await chatWithOpenAI(client, prompt, { model, maxTokens: 32 });
     } else {
-      const client = createGeminiClient(config.apiKey);
+      const client = createGeminiClient(apiKey);
       raw = await chatWithGemini(client, prompt, { model });
     }
     const title = sanitizeTitle(raw);
-    return title || null;
+    if (!title) {
+      console.warn(`[title-gen] Empty title after sanitize — raw="${raw.slice(0, 100)}"`);
+      return null;
+    }
+    console.log(`[title-gen] Generated "${title}"`);
+    return title;
   } catch (err) {
     console.error("[title-gen] Failed:", err);
     return null;
