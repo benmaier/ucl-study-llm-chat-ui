@@ -616,4 +616,122 @@ describe("createSseStream", () => {
     expect(toolOutputs[0]).toMatchObject({ toolCallId: "tool-0", output: "result.txt" });
     expect(toolOutputs[1]).toMatchObject({ toolCallId: "tool-1", output: "file contents" });
   });
+
+  // -----------------------------------------------------------------------
+  // Fallback provider
+  // -----------------------------------------------------------------------
+
+  describe("fallback provider", () => {
+    it("falls back when primary send() throws before any content", async () => {
+      const primary = errorConversation(new Error("Primary API down"));
+      const fallback = mockConversation([{ type: "text", text: "Hello from fallback" }]);
+      const createFallback = async () => fallback;
+
+      const stream = createSseStream(primary, "hi", { ...testOptions, createFallback });
+      const sse = await collectSseEvents(stream);
+
+      // Should emit a switching-to-fallback error, then the fallback's content + finish
+      const errors = sse.filter(e => e.type === "error");
+      expect(errors.length).toBeGreaterThanOrEqual(1);
+      expect(String(errors[0].errorText)).toMatch(/switching to fallback/i);
+
+      const deltas = sse.filter(e => e.type === "text-delta");
+      expect(deltas).toHaveLength(1);
+      expect(deltas[0].delta).toBe("Hello from fallback");
+      expect(sse[sse.length - 1]).toEqual({ type: "finish" });
+    });
+
+    it("falls back after the 3× empty-retry loop exhausts", async () => {
+      const primary = mockConversation([]); // always empty
+      const fallback = mockConversation([{ type: "text", text: "Fallback saved it" }]);
+      const createFallback = async () => fallback;
+
+      const stream = createSseStream(primary, "hi", { ...testOptions, createFallback });
+      const sse = await collectSseEvents(stream);
+
+      const deltas = sse.filter(e => e.type === "text-delta");
+      expect(deltas).toHaveLength(1);
+      expect(deltas[0].delta).toBe("Fallback saved it");
+      expect(sse[sse.length - 1]).toEqual({ type: "finish" });
+    }, 15_000);
+
+    it("does NOT fall back if content was already emitted before the error", async () => {
+      // Primary streams some text then throws — can't rewind the client
+      const primary = {
+        send: async (_msg: string, onEvent: (e: StreamEvent) => void) => {
+          onEvent({ type: "text", text: "partial..." });
+          throw new Error("Connection dropped");
+        },
+      } as any;
+      const fallback = mockConversation([{ type: "text", text: "never called" }]);
+      let fallbackCalled = false;
+      const createFallback = async () => {
+        fallbackCalled = true;
+        return fallback;
+      };
+
+      const stream = createSseStream(primary, "hi", { ...testOptions, createFallback });
+      const sse = await collectSseEvents(stream);
+
+      expect(fallbackCalled).toBe(false);
+      const deltas = sse.filter(e => e.type === "text-delta");
+      expect(deltas).toHaveLength(1);
+      expect(deltas[0].delta).toBe("partial...");
+      const errors = sse.filter(e => e.type === "error");
+      expect(String(errors[errors.length - 1].errorText)).toMatch(/Connection dropped/);
+    });
+
+    it("emits final error if fallback itself also throws", async () => {
+      const primary = errorConversation(new Error("Primary down"));
+      const fallback = errorConversation(new Error("Fallback also down"));
+      const createFallback = async () => fallback;
+
+      const stream = createSseStream(primary, "hi", { ...testOptions, createFallback });
+      const sse = await collectSseEvents(stream);
+
+      const errors = sse.filter(e => e.type === "error");
+      const finalError = errors[errors.length - 1];
+      expect(String(finalError.errorText)).toMatch(/Fallback also down/);
+      expect(sse[sse.length - 1]).toEqual({ type: "finish" });
+    });
+
+    it("emits final error if fallback also returns empty", async () => {
+      const primary = mockConversation([]);
+      const fallback = mockConversation([]);
+      const createFallback = async () => fallback;
+
+      const stream = createSseStream(primary, "hi", { ...testOptions, createFallback });
+      const sse = await collectSseEvents(stream);
+
+      const errors = sse.filter(e => e.type === "error");
+      const finalError = errors[errors.length - 1];
+      expect(String(finalError.errorText)).toMatch(/primary.*fallback.*empty/i);
+      expect(sse[sse.length - 1]).toEqual({ type: "finish" });
+    }, 15_000);
+
+    it("no fallback configured: behaves as before (error + finish on throw)", async () => {
+      const primary = errorConversation(new Error("Primary down"));
+      const stream = createSseStream(primary, "hi", testOptions);
+      const sse = await collectSseEvents(stream);
+
+      const errors = sse.filter(e => e.type === "error");
+      expect(String(errors[errors.length - 1].errorText)).toMatch(/Primary down/);
+      expect(sse[sse.length - 1]).toEqual({ type: "finish" });
+    });
+
+    it("createFallback itself throwing emits error, no infinite loop", async () => {
+      const primary = errorConversation(new Error("Primary down"));
+      const createFallback = async () => {
+        throw new Error("no fallback key available");
+      };
+
+      const stream = createSseStream(primary, "hi", { ...testOptions, createFallback });
+      const sse = await collectSseEvents(stream);
+
+      const errors = sse.filter(e => e.type === "error");
+      const finalError = errors[errors.length - 1];
+      expect(String(finalError.errorText)).toMatch(/no fallback key available/);
+      expect(sse[sse.length - 1]).toEqual({ type: "finish" });
+    });
+  });
 });

@@ -58,6 +58,22 @@ export interface ConversationBackend {
    *  If omitted (or it returns `undefined`), callers fall back to
    *  `ChatRouteConfig.apiKey`, then to the SDK client's env-var default. */
   getApiKey?(provider: "anthropic" | "openai" | "gemini"): Promise<string | undefined>;
+  /** Build a Conversation for the same thread on a different provider, used
+   *  when the primary provider fails (throws or returns 3 empty responses in a row).
+   *
+   *  Implementations own: (a) resolving an API key for the fallback provider,
+   *  (b) loading the existing serialized conversation data, (c) calling
+   *  `Conversation.resume(data, { provider, apiKey, model, writers })` with
+   *  the same writers the primary Conversation was created with, and
+   *  (d) updating any internal cache so subsequent `getOrCreateConversation`
+   *  calls return the fallback instance.
+   *
+   *  If omitted, fallback is disabled regardless of `ChatRouteConfig.fallbackProvider`. */
+  createFallbackConversation?(
+    threadId: string,
+    provider: "anthropic" | "openai" | "gemini",
+    model?: string,
+  ): Promise<Conversation>;
 }
 
 /** Server-side configuration for route handler factories. */

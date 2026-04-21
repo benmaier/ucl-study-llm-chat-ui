@@ -64,6 +64,12 @@ export interface SseStreamOptions {
    *  the response body ends — otherwise the serverless function may freeze
    *  and the task is lost. Errors are swallowed. */
   backgroundTask?: Promise<void>;
+  /** Optional factory for a fallback Conversation on a different provider.
+   *  Invoked when the primary `send()` throws before any content is emitted,
+   *  OR after the empty-response retry loop exhausts its 3 attempts. Stream
+   *  tries the fallback's `send()` exactly once; if it also fails or returns
+   *  empty, the stream emits a final error. */
+  createFallback?: () => Promise<Conversation>;
 }
 
 /**
@@ -75,7 +81,7 @@ export function createSseStream(
   message: string,
   options: SseStreamOptions,
 ): ReadableStream {
-  const { fileIds, images, threadId, traceFile, apiBasePath, deferToolOutput, backgroundTask } = options;
+  const { fileIds, images, threadId, traceFile, apiBasePath, deferToolOutput, backgroundTask, createFallback } = options;
   const baseUrl = apiBasePath ?? "/api";
 
   /** Append a JSONL trace entry if traceFile is set. */
@@ -102,6 +108,9 @@ export function createSseStream(
       let streamedTextLength = 0; // total chars streamed via text events
       let streamedImageCount = 0; // number of ![...]() images in streamed text
       let streamClosed = false;
+      // Cumulative across attempts: true once any content (text or tool)
+      // has reached the client. Once true, no fallback retry can rewind.
+      let anyContentEmitted = false;
       /** Tools that were flushed (counter advanced) before their output arrived.
        *  Each entry holds the toolCallId to emit output-available for later. */
       const deferredOutputTools: Array<{ toolCallId: string; sdkToolId?: string }> = [];
@@ -189,31 +198,39 @@ export function createSseStream(
 
       const MAX_ATTEMPTS = 3;
       let attempt = 0;
+      let usedFallback = false;
+      let currentConversation = conversation;
+
+      /** Reset per-attempt state between tries. Called before every attempt
+       *  except the very first, and also on switch to fallback. */
+      function resetPerAttemptState() {
+        textBlockOpen = false;
+        textBlockCounter = 0;
+        toolCallCounter = 0;
+        accumulatedInput = "";
+        accumulatedOutput = "";
+        toolInputFinalized = false;
+        currentToolName = "";
+        currentSdkToolId = undefined;
+        pendingToolEnd = false;
+        currentlyInTool = false;
+        streamedTextLength = 0;
+        streamedImageCount = 0;
+        deferredOutputTools.length = 0;
+        sdkToSseToolId.clear();
+      }
 
       try {
         let result: any;
+        let finalFailure: unknown = null;
 
-        while (attempt < MAX_ATTEMPTS) {
+        retryLoop: while (true) {
           attempt++;
+          if (attempt > 1) resetPerAttemptState();
 
-          // Reset counters for each attempt
-          if (attempt > 1) {
-            textBlockOpen = false;
-            textBlockCounter = 0;
-            toolCallCounter = 0;
-            accumulatedInput = "";
-            accumulatedOutput = "";
-            toolInputFinalized = false;
-            currentToolName = "";
-            currentSdkToolId = undefined;
-            pendingToolEnd = false;
-            currentlyInTool = false;
-            streamedTextLength = 0;
-            deferredOutputTools.length = 0;
-            sdkToSseToolId.clear();
-          }
-
-        result = await conversation.send(message, (event: StreamEvent) => {
+          let sendError: unknown = null;
+          try {
+            result = await currentConversation.send(message, (event: StreamEvent) => {
           // Debug: log every SDK event (enable with DEBUG_STREAMS=1)
           if (DEBUG_STREAMS) {
             const logEvent = { ...event } as Record<string, unknown>;
@@ -245,6 +262,7 @@ export function createSseStream(
                 delta: txt,
               });
               streamedTextLength += txt.length;
+              if (txt.length > 0) anyContentEmitted = true;
               // Track if the model streams image markdown (OpenAI file citations)
               if (/!\[.*?\]\(.*?\)/.test(txt)) streamedImageCount++;
               break;
@@ -260,6 +278,7 @@ export function createSseStream(
               if (event.toolCallId) {
                 sdkToSseToolId.set(event.toolCallId, currentToolCallId());
               }
+              anyContentEmitted = true;
               emit({
                 type: "tool-input-start",
                 toolCallId: currentToolCallId(),
@@ -392,36 +411,87 @@ export function createSseStream(
               break;
             }
           }
-        }, hasSendOptions ? sendOptions : undefined);
+            }, hasSendOptions ? sendOptions : undefined);
+          } catch (err) {
+            sendError = err;
+            console.error(`[stream-mapper] send() error (attempt ${attempt}, fallback=${usedFallback}):`, err);
+          }
 
-        console.log(`[stream-mapper] send() completed (attempt ${attempt}/${MAX_ATTEMPTS}) — text=${result?.text?.length ?? 0} files=${result?.files?.length ?? 0} artifacts=${result?.codeArtifacts?.length ?? 0} streamedText=${streamedTextLength} tools=${toolCallCounter}`);
-        traceLog("sdk", "SEND_RESULT", {
-          attempt,
-          textLength: result?.text?.length ?? 0,
-          filesCount: result?.files?.length ?? 0,
-          codeArtifactsCount: result?.codeArtifacts?.length ?? 0,
-          streamedTextLength,
-          toolCallCounter,
-        });
+          console.log(`[stream-mapper] attempt ${attempt} (fallback=${usedFallback}) — text=${result?.text?.length ?? 0} streamedText=${streamedTextLength} tools=${toolCallCounter} error=${sendError ? "yes" : "no"}`);
+          traceLog("sdk", "SEND_RESULT", {
+            attempt,
+            usedFallback,
+            textLength: result?.text?.length ?? 0,
+            filesCount: result?.files?.length ?? 0,
+            streamedTextLength,
+            toolCallCounter,
+            error: sendError ? (sendError instanceof Error ? sendError.message : String(sendError)) : null,
+          });
 
-        // Check if we got any content
-        if (streamedTextLength > 0 || toolCallCounter > 0) {
-          break; // Got content, exit retry loop
+          // Success: client-visible content was emitted this attempt
+          if (!sendError && (streamedTextLength > 0 || toolCallCounter > 0)) {
+            break retryLoop;
+          }
+
+          // Mid-stream failure: content already streamed, can't rewind the client
+          if (sendError && anyContentEmitted) {
+            finalFailure = sendError;
+            break retryLoop;
+          }
+
+          // Primary retry: empty response, still on primary, attempts remain
+          const canRetryPrimary = !usedFallback && !sendError && attempt < MAX_ATTEMPTS;
+          if (canRetryPrimary) {
+            console.warn(`[stream-mapper] Empty response on attempt ${attempt}/${MAX_ATTEMPTS}, retrying in 3s...`);
+            emit({ type: "error", errorText: `Empty response from model, retrying (${attempt}/${MAX_ATTEMPTS})...` });
+            await new Promise(r => setTimeout(r, 3000));
+            continue retryLoop;
+          }
+
+          // Primary is done (errored before content, or 3 empty attempts).
+          // Try fallback once if available and no content has leaked to the client.
+          if (!usedFallback && createFallback && !anyContentEmitted) {
+            console.log(`[stream-mapper] Switching to fallback provider (reason=${sendError ? "send-error" : "empty-exhausted"})`);
+            emit({ type: "error", errorText: `Primary provider failed, switching to fallback…` });
+            try {
+              currentConversation = await createFallback();
+            } catch (fallbackErr) {
+              console.error(`[stream-mapper] createFallback() failed:`, fallbackErr);
+              finalFailure = fallbackErr;
+              break retryLoop;
+            }
+            usedFallback = true;
+            attempt = 0;
+            resetPerAttemptState();
+            continue retryLoop;
+          }
+
+          // No (further) recovery possible — compose final failure
+          if (sendError) {
+            finalFailure = sendError;
+          } else {
+            finalFailure = new Error(
+              usedFallback
+                ? `Primary (${MAX_ATTEMPTS}×) and fallback both returned empty responses. Please try again.`
+                : `The model returned empty responses after ${MAX_ATTEMPTS} attempts. Please try again.`,
+            );
+          }
+          break retryLoop;
         }
 
-        // Empty response — retry if we have attempts left
-        if (attempt < MAX_ATTEMPTS) {
-          console.warn(`[stream-mapper] Empty response on attempt ${attempt}/${MAX_ATTEMPTS}, retrying in 3s...`);
-          emit({ type: "error", errorText: `Empty response from model, retrying (${attempt}/${MAX_ATTEMPTS})...` });
-          await new Promise(r => setTimeout(r, 3000));
-          continue;
+        // Retry loop ended in final failure — emit error + finish so the
+        // assistant-ui client unsticks its loading state. Skip post-processing
+        // because we don't have a successful result to draw files from.
+        if (finalFailure) {
+          console.error(`[stream-mapper] Stream ending in error — threadId=${threadId}:`, finalFailure);
+          closeTextBlock();
+          const errorMsg = finalFailure instanceof Error
+            ? `${finalFailure.message}${finalFailure.cause ? `\nCause: ${finalFailure.cause}` : ""}`
+            : String(finalFailure);
+          emit({ type: "error", errorText: errorMsg });
+          emit({ type: "finish" });
+          return;
         }
-
-        // All attempts exhausted
-        console.error(`[stream-mapper] Empty response after ${MAX_ATTEMPTS} attempts`);
-        emit({ type: "error", errorText: `The model returned empty responses after ${MAX_ATTEMPTS} attempts. Please try again.` });
-
-        } // end retry while loop
 
         // Flush any pending tool output
         flushPendingTool();
