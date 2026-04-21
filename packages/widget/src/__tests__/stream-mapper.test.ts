@@ -97,18 +97,18 @@ describe("createSseStream", () => {
     expect(sse[6]).toEqual({ type: "finish" });
   });
 
-  it("empty response retries 3 times with error messages", async () => {
+  it("empty response retries 3 times silently, emits only the final error", async () => {
     const conv = mockConversation([]);
     const stream = createSseStream(conv, "Hello", testOptions);
     const sse = await collectSseEvents(stream);
 
-    // Should have: start, error(retry 1), error(retry 2), error(final), finish
+    // Transient retry notices are NOT emitted — assistant-ui treats any
+    // SSE `error` as terminal. Client sees only: start → (silent retries)
+    // → final error (only after all attempts exhaust) → finish.
     expect(sse[0]).toEqual({ type: "start" });
     const errors = sse.filter((e) => e.type === "error");
-    expect(errors.length).toBeGreaterThanOrEqual(1);
-    // Final error should mention "3 attempts"
-    const finalError = errors[errors.length - 1];
-    expect(String(finalError.errorText)).toMatch(/3 attempts/);
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0].errorText)).toMatch(/3 attempts/);
     expect(sse[sse.length - 1]).toEqual({ type: "finish" });
   }, 15_000); // 3 retries × 3s = 9s + overhead
 
@@ -622,7 +622,7 @@ describe("createSseStream", () => {
   // -----------------------------------------------------------------------
 
   describe("fallback provider", () => {
-    it("falls back when primary send() throws before any content", async () => {
+    it("falls back silently when primary send() throws before any content", async () => {
       const primary = errorConversation(new Error("Primary API down"));
       const fallback = mockConversation([{ type: "text", text: "Hello from fallback" }]);
       const createFallback = async () => fallback;
@@ -630,10 +630,11 @@ describe("createSseStream", () => {
       const stream = createSseStream(primary, "hi", { ...testOptions, createFallback });
       const sse = await collectSseEvents(stream);
 
-      // Should emit a switching-to-fallback error, then the fallback's content + finish
+      // Silent fallback: no SSE `error` event. Client sees only the fallback's
+      // content then finish. The switch is logged server-side + persisted via
+      // `turn.provider` in the DB, but never surfaced to the user.
       const errors = sse.filter(e => e.type === "error");
-      expect(errors.length).toBeGreaterThanOrEqual(1);
-      expect(String(errors[0].errorText)).toMatch(/switching to fallback/i);
+      expect(errors).toHaveLength(0);
 
       const deltas = sse.filter(e => e.type === "text-delta");
       expect(deltas).toHaveLength(1);
