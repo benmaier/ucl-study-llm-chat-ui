@@ -439,20 +439,26 @@ export function createSseStream(
             break retryLoop;
           }
 
-          // Primary retry: empty response, still on primary, attempts remain
+          // Primary retry: empty response, still on primary, attempts remain.
+          // IMPORTANT: do not emit an SSE `error` event here — assistant-ui
+          // treats `error` as terminal and stops rendering subsequent
+          // text-deltas, locking the message into a "Something went wrong"
+          // state even if the next attempt succeeds. Retry silently; the
+          // client stays in its "thinking" spinner.
           const canRetryPrimary = !usedFallback && !sendError && attempt < MAX_ATTEMPTS;
           if (canRetryPrimary) {
             console.warn(`[stream-mapper] Empty response on attempt ${attempt}/${MAX_ATTEMPTS}, retrying in 3s...`);
-            emit({ type: "error", errorText: `Empty response from model, retrying (${attempt}/${MAX_ATTEMPTS})...` });
             await new Promise(r => setTimeout(r, 3000));
             continue retryLoop;
           }
 
           // Primary is done (errored before content, or 3 empty attempts).
           // Try fallback once if available and no content has leaked to the client.
+          // Silent switch for the same reason as above — client stays in
+          // "thinking" until the fallback starts streaming. Server log
+          // below is the audit trail (plus `turn.provider` in the DB).
           if (!usedFallback && createFallback && !anyContentEmitted) {
             console.log(`[stream-mapper] Switching to fallback provider (reason=${sendError ? "send-error" : "empty-exhausted"})`);
-            emit({ type: "error", errorText: `Primary provider failed, switching to fallback…` });
             try {
               currentConversation = await createFallback();
             } catch (fallbackErr) {
