@@ -148,6 +148,20 @@ export function createChatHandler(config: ChatRouteConfig) {
       console.log(`[route] Tracing enabled -> ${traceFile}`);
     }
 
+    // Fallback factory — stream-mapper invokes this if primary send() throws
+    // before any content is emitted, or if the 3× empty-retry loop exhausts.
+    // Requires both a configured fallback provider and a backend that supports
+    // switching (backends opt in via `createFallbackConversation`).
+    const createFallback =
+      config.fallbackProvider && backend.createFallbackConversation
+        ? () =>
+            backend.createFallbackConversation!(
+              threadId,
+              config.fallbackProvider!,
+              config.fallbackModel,
+            )
+        : undefined;
+
     const stream = createSseStream(conversation, finalMessage, {
       fileIds: fileIds.length > 0 ? fileIds : undefined,
       images: images.length > 0 ? images : undefined,
@@ -156,6 +170,7 @@ export function createChatHandler(config: ChatRouteConfig) {
       apiBasePath: config.apiBasePath,
       deferToolOutput: config.provider === "openai",
       backgroundTask: titleTask,
+      createFallback,
     });
 
     return new Response(stream, {

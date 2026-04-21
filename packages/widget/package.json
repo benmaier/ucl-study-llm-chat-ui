@@ -1,6 +1,6 @@
 {
   "name": "ucl-chat-widget",
-  "version": "0.3.16",
+  "version": "0.3.17",
   "description": "Reusable LLM chat widget for Next.js applications",
   "type": "module",
   "main": "./dist/index.js",

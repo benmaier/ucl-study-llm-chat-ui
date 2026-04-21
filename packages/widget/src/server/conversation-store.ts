@@ -142,6 +142,31 @@ export class FileConversationBackend implements ConversationBackend {
     return conversation;
   }
 
+  async createFallbackConversation(
+    threadId: string,
+    provider: Provider,
+    model?: string,
+  ): Promise<Conversation> {
+    const filePath = this.filePathForThread(threadId);
+    if (!existsSync(filePath)) {
+      throw new Error(`No conversation data for threadId "${threadId}" — can't fall back`);
+    }
+    const writers = [new FileWriter(filePath), ...(this.config.extraWriters ?? [])];
+    const { apiKey } = this.config;
+
+    const fallback = await Conversation.loadFromFile(filePath, {
+      provider,
+      model,
+      writers,
+      ...(apiKey ? { apiKey } : {}),
+    } as any);
+
+    // Replace the cached primary so subsequent getOrCreateConversation
+    // returns the fallback — the contract the widget relies on.
+    this.cache.set(threadId, { conversation: fallback, lastAccessedAt: Date.now() });
+    return fallback;
+  }
+
   async listThreads(): Promise<{ threads: ThreadMeta[] }> {
     if (!existsSync(this.conversationsDir)) {
       return { threads: [] };
