@@ -734,5 +734,108 @@ describe("createSseStream", () => {
       expect(String(finalError.errorText)).toMatch(/no fallback key available/);
       expect(sse[sse.length - 1]).toEqual({ type: "finish" });
     });
+
+    it("calls onFallbackUsed with reason=send-error and the primary error", async () => {
+      const primaryErr = new Error("Primary 401");
+      const primary = errorConversation(primaryErr);
+      const fallback = mockConversation([{ type: "text", text: "ok" }]);
+
+      const calls: Array<{ reason: string; primaryError?: Error }> = [];
+      const onFallbackUsed = async (reason: "send-error" | "empty-exhausted", primaryError?: Error) => {
+        calls.push({ reason, primaryError });
+      };
+
+      const stream = createSseStream(primary, "hi", {
+        ...testOptions,
+        createFallback: async () => fallback,
+        onFallbackUsed,
+      });
+      await collectSseEvents(stream);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].reason).toBe("send-error");
+      expect(calls[0].primaryError).toBe(primaryErr);
+    });
+
+    it("calls onFallbackUsed with reason=empty-exhausted and no primaryError", async () => {
+      const primary = mockConversation([]); // 3× empty
+      const fallback = mockConversation([{ type: "text", text: "ok" }]);
+
+      const calls: Array<{ reason: string; primaryError?: Error }> = [];
+      const onFallbackUsed = async (reason: "send-error" | "empty-exhausted", primaryError?: Error) => {
+        calls.push({ reason, primaryError });
+      };
+
+      const stream = createSseStream(primary, "hi", {
+        ...testOptions,
+        createFallback: async () => fallback,
+        onFallbackUsed,
+      });
+      await collectSseEvents(stream);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].reason).toBe("empty-exhausted");
+      expect(calls[0].primaryError).toBeUndefined();
+    }, 15_000);
+
+    it("onFallbackUsed is NOT called when no fallback happens", async () => {
+      const primary = mockConversation([{ type: "text", text: "hello" }]);
+
+      let called = false;
+      const onFallbackUsed = async () => { called = true; };
+
+      const stream = createSseStream(primary, "hi", {
+        ...testOptions,
+        createFallback: async () => primary,
+        onFallbackUsed,
+      });
+      await collectSseEvents(stream);
+
+      expect(called).toBe(false);
+    });
+
+    it("onFallbackUsed throwing does not affect the user-facing stream", async () => {
+      const primary = errorConversation(new Error("Primary down"));
+      const fallback = mockConversation([{ type: "text", text: "ok from fallback" }]);
+
+      const onFallbackUsed = async () => {
+        throw new Error("audit DB is down");
+      };
+
+      const stream = createSseStream(primary, "hi", {
+        ...testOptions,
+        createFallback: async () => fallback,
+        onFallbackUsed,
+      });
+      const sse = await collectSseEvents(stream);
+
+      // Stream still delivers the fallback's content normally
+      const deltas = sse.filter(e => e.type === "text-delta");
+      expect(deltas).toHaveLength(1);
+      expect(deltas[0].delta).toBe("ok from fallback");
+      expect(sse[sse.length - 1]).toEqual({ type: "finish" });
+      const errors = sse.filter(e => e.type === "error");
+      expect(errors).toHaveLength(0);
+    });
+
+    it("stream waits for a slow onFallbackUsed before closing (serverless safety)", async () => {
+      const primary = errorConversation(new Error("Primary down"));
+      const fallback = mockConversation([{ type: "text", text: "ok" }]);
+
+      let auditResolved = false;
+      const onFallbackUsed = async () => {
+        await new Promise<void>(r => setTimeout(() => { auditResolved = true; r(); }, 100));
+      };
+
+      const stream = createSseStream(primary, "hi", {
+        ...testOptions,
+        createFallback: async () => fallback,
+        onFallbackUsed,
+      });
+      // collectSseEvents only returns once the stream closes
+      await collectSseEvents(stream);
+
+      expect(auditResolved).toBe(true);
+    });
   });
 });

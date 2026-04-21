@@ -162,6 +162,15 @@ export function createChatHandler(config: ChatRouteConfig) {
             )
         : undefined;
 
+    // Audit hook — threadId is bound here so stream-mapper doesn't need
+    // to know about it. Backend impls typically write a fallback_events
+    // row (or emit a metrics event) so the switch is auditable beyond
+    // ephemeral server stdout.
+    const onFallbackUsed = backend.onFallbackUsed
+      ? (reason: "send-error" | "empty-exhausted", primaryError?: Error) =>
+          backend.onFallbackUsed!(threadId, reason, primaryError)
+      : undefined;
+
     const stream = createSseStream(conversation, finalMessage, {
       fileIds: fileIds.length > 0 ? fileIds : undefined,
       images: images.length > 0 ? images : undefined,
@@ -171,6 +180,7 @@ export function createChatHandler(config: ChatRouteConfig) {
       deferToolOutput: config.provider === "openai",
       backgroundTask: titleTask,
       createFallback,
+      onFallbackUsed,
     });
 
     return new Response(stream, {

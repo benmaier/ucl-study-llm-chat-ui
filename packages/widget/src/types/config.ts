@@ -74,6 +74,20 @@ export interface ConversationBackend {
     provider: "anthropic" | "openai" | "gemini",
     model?: string,
   ): Promise<Conversation>;
+  /** Audit hook: called by the chat handler immediately after a successful
+   *  `createFallbackConversation()`, so backends can persist a permanent
+   *  record of the switch (server stdout logs have short retention on
+   *  serverless platforms).
+   *
+   *  Fires fire-and-forget but is awaited inside the SSE stream before the
+   *  response body closes, so serverless runtimes can't freeze mid-write.
+   *  A thrown error is logged and swallowed — does not affect the user-
+   *  facing stream. */
+  onFallbackUsed?(
+    threadId: string,
+    reason: "send-error" | "empty-exhausted",
+    primaryError?: Error,
+  ): Promise<void>;
 }
 
 /** Server-side configuration for route handler factories. */

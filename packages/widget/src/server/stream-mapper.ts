@@ -70,6 +70,13 @@ export interface SseStreamOptions {
    *  tries the fallback's `send()` exactly once; if it also fails or returns
    *  empty, the stream emits a final error. */
   createFallback?: () => Promise<Conversation>;
+  /** Optional audit hook called immediately after `createFallback()` succeeds.
+   *  Fire-and-forget — awaited alongside `backgroundTask` before the response
+   *  body closes, for serverless safety. Errors are swallowed. */
+  onFallbackUsed?: (
+    reason: "send-error" | "empty-exhausted",
+    primaryError?: Error,
+  ) => Promise<void>;
 }
 
 /**
@@ -81,7 +88,7 @@ export function createSseStream(
   message: string,
   options: SseStreamOptions,
 ): ReadableStream {
-  const { fileIds, images, threadId, traceFile, apiBasePath, deferToolOutput, backgroundTask, createFallback } = options;
+  const { fileIds, images, threadId, traceFile, apiBasePath, deferToolOutput, backgroundTask, createFallback, onFallbackUsed } = options;
   const baseUrl = apiBasePath ?? "/api";
 
   /** Append a JSONL trace entry if traceFile is set. */
@@ -111,6 +118,10 @@ export function createSseStream(
       // Cumulative across attempts: true once any content (text or tool)
       // has reached the client. Once true, no fallback retry can rewind.
       let anyContentEmitted = false;
+      // Promises for fire-and-forget audit hooks (onFallbackUsed). Awaited
+      // in the finally block before controller.close() so serverless
+      // runtimes can't freeze before the audit write lands.
+      const pendingAudits: Promise<void>[] = [];
       /** Tools that were flushed (counter advanced) before their output arrived.
        *  Each entry holds the toolCallId to emit output-available for later. */
       const deferredOutputTools: Array<{ toolCallId: string; sdkToolId?: string }> = [];
@@ -458,7 +469,8 @@ export function createSseStream(
           // "thinking" until the fallback starts streaming. Server log
           // below is the audit trail (plus `turn.provider` in the DB).
           if (!usedFallback && createFallback && !anyContentEmitted) {
-            console.log(`[stream-mapper] Switching to fallback provider (reason=${sendError ? "send-error" : "empty-exhausted"})`);
+            const reason: "send-error" | "empty-exhausted" = sendError ? "send-error" : "empty-exhausted";
+            console.log(`[stream-mapper] Switching to fallback provider (reason=${reason})`);
             try {
               currentConversation = await createFallback();
             } catch (fallbackErr) {
@@ -467,6 +479,17 @@ export function createSseStream(
               break retryLoop;
             }
             usedFallback = true;
+            // Fire the audit hook in parallel with the fallback send().
+            // The returned promise is awaited in the finally block so
+            // serverless can't freeze before the DB write lands.
+            if (onFallbackUsed) {
+              const primaryError = sendError instanceof Error ? sendError : undefined;
+              pendingAudits.push(
+                onFallbackUsed(reason, primaryError).catch(err =>
+                  console.error("[stream-mapper] onFallbackUsed error:", err),
+                ),
+              );
+            }
             attempt = 0;
             resetPerAttemptState();
             continue retryLoop;
@@ -588,12 +611,18 @@ export function createSseStream(
           : String(err);
         emit({ type: "error", errorText: errorMsg });
       } finally {
-        // Keep the response body open until background work (title gen, etc.)
-        // finishes — serverless functions may freeze the moment the body closes.
+        // Keep the response body open until background work (title gen,
+        // fallback audits) finishes — serverless functions may freeze the
+        // moment the body closes.
         if (backgroundTask) {
           try { await backgroundTask; } catch (err) {
             console.error(`[stream-mapper] Background task error — threadId=${threadId}:`, err);
           }
+        }
+        if (pendingAudits.length > 0) {
+          // Each promise already has a .catch to swallow errors, but wrap
+          // defensively in case one was pushed without one.
+          try { await Promise.all(pendingAudits); } catch { /* already logged */ }
         }
         if (!streamClosed) {
           try { controller.close(); } catch {}
