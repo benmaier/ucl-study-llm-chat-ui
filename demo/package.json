@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test:e2e": "npx playwright test",
-    "test:e2e:headed": "npx playwright test --headed"
+    "test:e2e:headed": "npx playwright test --headed",
+    "test:e2e:fallback": "npx playwright test --config=playwright.fallback.config.ts"
   },
   "dependencies": {
     "ucl-chat-widget": "^0.3.20",
