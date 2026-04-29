@@ -837,5 +837,39 @@ describe("createSseStream", () => {
 
       expect(auditResolved).toBe(true);
     });
+
+    it("multi-message: each turn that fails on primary triggers a fresh fallback (user's gemini-3-flash repro)", async () => {
+      // Reproduces the reported pattern: primary configured with an
+      // invalid model (gemini-3-flash) keeps failing turn after turn;
+      // each turn must independently fall back and stream the answer
+      // without any stale state breaking subsequent calls.
+      const primaryErr = new Error("400 The requested model 'gemini-3-flash' does not exist.");
+      const primary = errorConversation(primaryErr);
+
+      const answers = ["4", "6", "25"];
+      let fallbackCallCount = 0;
+      const createFallback = async () => {
+        const answer = answers[fallbackCallCount++];
+        return mockConversation([{ type: "text", text: answer }]);
+      };
+
+      // Three turns, same conversation flow (each turn its own stream)
+      for (let i = 0; i < 3; i++) {
+        const stream = createSseStream(primary, `msg ${i + 1}`, {
+          ...testOptions,
+          createFallback,
+        });
+        const sse = await collectSseEvents(stream);
+
+        // Each turn: no SSE error event, fallback content streams cleanly
+        expect(sse.filter(e => e.type === "error")).toHaveLength(0);
+        const deltas = sse.filter(e => e.type === "text-delta");
+        expect(deltas).toHaveLength(1);
+        expect(deltas[0].delta).toBe(answers[i]);
+        expect(sse[sse.length - 1]).toEqual({ type: "finish" });
+      }
+
+      expect(fallbackCallCount).toBe(3);
+    });
   });
 });
