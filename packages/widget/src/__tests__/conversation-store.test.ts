@@ -19,12 +19,22 @@ vi.mock("ucl-study-llm-chat-api", () => {
     getId() {
       return this._opts.id ?? "mock-id";
     }
+    getProvider() {
+      return this._opts.provider;
+    }
     send = vi.fn();
     static loadFromFile = vi
       .fn()
       .mockImplementation(async (filePath: string, opts: any) => {
         const inst = new MockConversation({ ...opts, id: "loaded-id" });
         (inst as any)._loadedFrom = filePath;
+        return inst;
+      });
+    static resume = vi
+      .fn()
+      .mockImplementation(async (data: any, opts: any) => {
+        const inst = new MockConversation({ ...opts, id: data?.id ?? "resumed-id" });
+        (inst as any)._resumedFrom = data;
         return inst;
       });
   }
@@ -307,6 +317,140 @@ describe("FileConversationBackend", () => {
     const p = backend.artifactsDirForThread("thread-1");
     expect(p).toContain("thread-1");
     expect(p).toContain("artifacts");
+  });
+
+  // -------------------------------------------------------------------
+  // createFallbackConversation
+  // -------------------------------------------------------------------
+
+  describe("createFallbackConversation", () => {
+    it("strips saved model when crossing providers", async () => {
+      // Reproduces the exact failure shape the user hit: primary was
+      // configured with `gemini-3-flash` (an invalid model id), so the
+      // saved conversation.json has model="gemini-3-flash". Without the
+      // scrub, resume() would pass that model to the OpenAI fallback,
+      // which produces "400 The requested model 'gemini-3-flash' does
+      // not exist."
+      const threadDir = path.join(tmpDir, "thread-cross");
+      mkdirSync(threadDir, { recursive: true });
+      writeFileSync(
+        path.join(threadDir, "conversation.json"),
+        JSON.stringify({
+          formatVersion: "1",
+          id: "thread-cross",
+          provider: "gemini",
+          model: "gemini-3-flash",
+          turns: [],
+          uploads: [],
+          textHistory: [],
+          createdAt: "2026-04-29T00:00:00Z",
+          updatedAt: "2026-04-29T00:00:00Z",
+        }),
+      );
+
+      const { Conversation } = await import("ucl-study-llm-chat-api");
+      const backend = createBackend({ provider: "gemini", model: "gemini-3-flash" });
+      const fallback = await backend.createFallbackConversation("thread-cross", "openai");
+
+      // Conversation.resume must have been called with data whose model
+      // field has been stripped — otherwise the SDK would fall back to
+      // validated.model and pass "gemini-3-flash" to OpenAI.
+      const resumeCall = (Conversation as any).resume.mock.calls.at(-1);
+      expect(resumeCall[0].provider).toBe("gemini"); // saved provider
+      expect(resumeCall[0].model).toBeUndefined();   // stripped
+      expect(resumeCall[1].provider).toBe("openai"); // target provider
+      expect(fallback).toBeDefined();
+      expect((fallback as any).getProvider()).toBe("openai");
+    });
+
+    it("preserves saved model when staying on the same provider", async () => {
+      // Edge case: createFallbackConversation called with the same
+      // provider as the saved one (unlikely but possible). Don't strip.
+      const threadDir = path.join(tmpDir, "thread-same");
+      mkdirSync(threadDir, { recursive: true });
+      writeFileSync(
+        path.join(threadDir, "conversation.json"),
+        JSON.stringify({
+          formatVersion: "1",
+          id: "thread-same",
+          provider: "openai",
+          model: "gpt-5-mini",
+          turns: [],
+          uploads: [],
+          textHistory: [],
+          createdAt: "2026-04-29T00:00:00Z",
+          updatedAt: "2026-04-29T00:00:00Z",
+        }),
+      );
+
+      const { Conversation } = await import("ucl-study-llm-chat-api");
+      const backend = createBackend({ provider: "openai" });
+      await backend.createFallbackConversation("thread-same", "openai");
+
+      const resumeCall = (Conversation as any).resume.mock.calls.at(-1);
+      expect(resumeCall[0].model).toBe("gpt-5-mini"); // preserved
+    });
+
+    it("uses explicit fallbackModel arg over scrubbed saved model", async () => {
+      const threadDir = path.join(tmpDir, "thread-arg");
+      mkdirSync(threadDir, { recursive: true });
+      writeFileSync(
+        path.join(threadDir, "conversation.json"),
+        JSON.stringify({
+          formatVersion: "1",
+          id: "thread-arg",
+          provider: "gemini",
+          model: "gemini-3-flash",
+          turns: [],
+          uploads: [],
+          textHistory: [],
+          createdAt: "2026-04-29T00:00:00Z",
+          updatedAt: "2026-04-29T00:00:00Z",
+        }),
+      );
+
+      const { Conversation } = await import("ucl-study-llm-chat-api");
+      const backend = createBackend({ provider: "gemini" });
+      await backend.createFallbackConversation("thread-arg", "openai", "gpt-5-mini");
+
+      const resumeCall = (Conversation as any).resume.mock.calls.at(-1);
+      // Saved model stripped, options.model passed explicitly
+      expect(resumeCall[0].model).toBeUndefined();
+      expect(resumeCall[1].model).toBe("gpt-5-mini");
+    });
+
+    it("evicts the cached primary so subsequent getOrCreate returns the fallback", async () => {
+      const threadDir = path.join(tmpDir, "thread-cache");
+      mkdirSync(threadDir, { recursive: true });
+      writeFileSync(
+        path.join(threadDir, "conversation.json"),
+        JSON.stringify({
+          formatVersion: "1",
+          id: "thread-cache",
+          provider: "gemini",
+          turns: [],
+          uploads: [],
+          textHistory: [],
+        }),
+      );
+
+      const backend = createBackend({ provider: "gemini" });
+      // Prime the cache with the primary
+      const primary = await backend.getOrCreateConversation("thread-cache");
+      // Switch to fallback
+      const fallback = await backend.createFallbackConversation("thread-cache", "openai");
+      // Subsequent getOrCreate must return the fallback, not the primary
+      const next = await backend.getOrCreateConversation("thread-cache");
+      expect(next).toBe(fallback);
+      expect(next).not.toBe(primary);
+    });
+
+    it("throws when no conversation file exists", async () => {
+      const backend = createBackend();
+      await expect(
+        backend.createFallbackConversation("nonexistent-thread", "openai"),
+      ).rejects.toThrow(/can't fall back/i);
+    });
   });
 });
 

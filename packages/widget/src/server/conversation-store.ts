@@ -154,7 +154,18 @@ export class FileConversationBackend implements ConversationBackend {
     const writers = [new FileWriter(filePath), ...(this.config.extraWriters ?? [])];
     const { apiKey } = this.config;
 
-    const fallback = await Conversation.loadFromFile(filePath, {
+    // Scrub the saved model name when crossing providers — model IDs are
+    // provider-specific (e.g. "gemini-3-flash" is meaningless to OpenAI).
+    // The SDK's resume() falls back to `validated.model` whenever
+    // options.model is undefined, which would otherwise pass the primary's
+    // model name to the fallback provider and produce a "model not found"
+    // 400 on the very first fallback turn.
+    const data = JSON.parse(readFileSync(filePath, "utf-8"));
+    if (data.provider !== provider) {
+      delete data.model;
+    }
+
+    const fallback = await Conversation.resume(data, {
       provider,
       model,
       writers,
