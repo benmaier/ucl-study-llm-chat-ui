@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { extractText, extractFiles, dataUrlToBuffer } from "../server/handlers/chat.js";
+import { extractText, extractFiles, dataUrlToBuffer, buildSandboxPath } from "../server/handlers/chat.js";
 
 describe("extractText", () => {
   it("extracts text from parts-based message", () => {
@@ -109,5 +109,51 @@ describe("dataUrlToBuffer", () => {
     expect(buf[1]).toBe(0x50);
     expect(buf[2]).toBe(0x4e);
     expect(buf[3]).toBe(0x47);
+  });
+});
+
+describe("buildSandboxPath", () => {
+  // Mappings verified empirically against live APIs (April 2026):
+  //   listdir(.) on Gemini      → ['input_file_0.csv']
+  //   listdir(/mnt/data) OpenAI → ['file-XXXX-probe.csv']
+  //   $INPUT_DIR Anthropic      → /files/input/<opaque>/probe.csv
+
+  it("OpenAI: /mnt/data/<file_id>-<filename>", () => {
+    expect(buildSandboxPath("openai", 0, "probe.csv", "file-ABC123")).toBe(
+      "/mnt/data/file-ABC123-probe.csv",
+    );
+  });
+
+  it("OpenAI: works with multi-dot filenames", () => {
+    expect(buildSandboxPath("openai", 0, "data.tar.gz", "file-XYZ")).toBe(
+      "/mnt/data/file-XYZ-data.tar.gz",
+    );
+  });
+
+  it("Gemini: input_file_<index>.<ext> with extension preserved", () => {
+    expect(buildSandboxPath("gemini", 0, "probe.csv", "ignored")).toBe("input_file_0.csv");
+    expect(buildSandboxPath("gemini", 3, "data.json", "ignored")).toBe("input_file_3.json");
+  });
+
+  it("Gemini: keeps last extension on multi-dot filenames", () => {
+    expect(buildSandboxPath("gemini", 0, "archive.tar.gz", "ignored")).toBe(
+      "input_file_0.gz",
+    );
+  });
+
+  it("Gemini: no extension when filename has no dot", () => {
+    expect(buildSandboxPath("gemini", 0, "README", "ignored")).toBe("input_file_0");
+  });
+
+  it("Anthropic: $INPUT_DIR/<filename>", () => {
+    expect(buildSandboxPath("anthropic", 0, "probe.csv", "file_abc")).toBe(
+      "$INPUT_DIR/probe.csv",
+    );
+  });
+
+  it("Anthropic: ignores file_id (sandbox uses displayName)", () => {
+    expect(buildSandboxPath("anthropic", 5, "data.json", "completely_different_id")).toBe(
+      "$INPUT_DIR/data.json",
+    );
   });
 });

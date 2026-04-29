@@ -56,6 +56,33 @@ export function dataUrlToBuffer(dataUrl: string): Buffer {
   return Buffer.from(base64, "base64");
 }
 
+/**
+ * Build the path that the model should use to read an uploaded non-image
+ * file inside the provider's code-execution sandbox. Each provider exposes
+ * uploads differently — verified empirically against live APIs:
+ *
+ *   - OpenAI    → `/mnt/data/<file_id>-<displayName>`
+ *   - Gemini    → `input_file_<index>.<ext>` in CWD
+ *   - Anthropic → `$INPUT_DIR/<displayName>` (env var set by Claude's sandbox)
+ */
+export function buildSandboxPath(
+  provider: "anthropic" | "openai" | "gemini",
+  index: number,
+  filename: string,
+  fileId: string,
+): string {
+  if (provider === "openai") {
+    return `/mnt/data/${fileId}-${filename}`;
+  }
+  if (provider === "gemini") {
+    const dot = filename.lastIndexOf(".");
+    const ext = dot >= 0 ? filename.slice(dot) : "";
+    return `input_file_${index}${ext}`;
+  }
+  // anthropic
+  return `$INPUT_DIR/${filename}`;
+}
+
 export function createChatHandler(config: ChatRouteConfig) {
   const backend = resolveBackend(config);
 
@@ -135,10 +162,11 @@ export function createChatHandler(config: ChatRouteConfig) {
 
     let finalMessage = messageText;
     if (nonImageParts.length > 0) {
-      const fileList = nonImageParts
-        .map((f, i) => `  input_file_${i}: "${f.filename}"`)
+      const provider = conversation.getProvider();
+      const lines = nonImageParts
+        .map((f, i) => `  - "${f.filename}" → ${buildSandboxPath(provider, i, f.filename, fileIds[i])}`)
         .join("\n");
-      finalMessage = `[Attached files:\n${fileList}]\n\n${messageText}`;
+      finalMessage = `[Attached files (use the path on the right side of the arrow to read the file):\n${lines}]\n\n${messageText}`;
     }
 
     let traceFile: string | undefined;
